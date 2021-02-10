@@ -29,7 +29,6 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/component-base/metrics/legacyregistry"
@@ -44,10 +43,9 @@ func init() {
 }
 
 var (
-	metricsAddress                    = flag.String("metrics-address", "0.0.0.0:29604", "export the metrics")
-	azDiskSchedulerExtenderPort       = flag.String("port", "8080", "port used by az scheduler extender")
-	kubeClient                        kubernetes.Interface
-	azKubeExtensionClient             clientSet.DiskV1alpha1Interface
+	metricsAddress              = flag.String("metrics-address", "0.0.0.0:29604", "export the metrics")
+	azDiskSchedulerExtenderPort = flag.String("port", "8080", "port used by az scheduler extender")
+
 	azVolumeAttachmentExtensionClient clientSet.AzVolumeAttachmentInterface
 	azDriverNodeExtensionClient       clientSet.AzDriverNodeInterface
 )
@@ -63,7 +61,7 @@ const (
 func init() {
 
 	var err error
-	_, azKubeExtensionClient, azVolumeAttachmentExtensionClient, azDriverNodeExtensionClient, err = getKubernetesClient()
+	azVolumeAttachmentExtensionClient, azDriverNodeExtensionClient, err = getKubernetesClient()
 
 	if err != nil {
 		klog.Fatalf("Failed to create kubernetes clinetset %s ...", err)
@@ -282,7 +280,7 @@ func trapClosedConnErr(err error) error {
 	return err
 }
 
-func getKubernetesClient() (kubernetes.Interface, clientSet.DiskV1alpha1Interface, clientSet.AzVolumeAttachmentInterface, clientSet.AzDriverNodeInterface, error) {
+func getKubernetesClient() (clientSet.AzVolumeAttachmentInterface, clientSet.AzDriverNodeInterface, error) {
 
 	config, err := rest.InClusterConfig()
 	if err != nil {
@@ -295,26 +293,20 @@ func getKubernetesClient() (kubernetes.Interface, clientSet.DiskV1alpha1Interfac
 		// create the config from the path
 		config, err = clientcmd.BuildConfigFromFlags("", kubeConfigPath)
 		if err != nil {
-			return nil, nil, nil, nil, fmt.Errorf("Cannot load kubeconfig: %v", err)
+			return nil, nil, fmt.Errorf("Cannot load kubeconfig: %v", err)
 		}
-	}
-
-	// generate the client based off of the config
-	kubeClient, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("Cannot create kubernetes client: %v", err)
 	}
 
 	// generate the clientset extension based off of the config
 	azKubeExtensionClient, err := clientSet.NewForConfig(config)
 	if err != nil {
-		return kubeClient, nil, nil, nil, fmt.Errorf("Cannot create clientset: %v", err)
+		return nil, nil, fmt.Errorf("Cannot create clientset: %v", err)
 	}
 	azVolumeAttachmentExtensionClient := azKubeExtensionClient.AzVolumeAttachments("")
 	azDriverNodeExtensionClient := azKubeExtensionClient.AzDriverNodes("")
 
 	klog.Info("Successfully constructed kubernetes client and extension clientset")
-	return kubeClient, azKubeExtensionClient, azVolumeAttachmentExtensionClient, azDriverNodeExtensionClient, nil
+	return azVolumeAttachmentExtensionClient, azDriverNodeExtensionClient, nil
 }
 
 func getFilterResponseBody(filteredNodes []v1.Node, nodeNames []string, failedNodes map[string]string, errorMessage string) *schedulerapi.ExtenderFilterResult {

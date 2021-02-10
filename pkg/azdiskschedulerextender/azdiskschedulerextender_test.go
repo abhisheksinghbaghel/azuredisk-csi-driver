@@ -513,10 +513,7 @@ func TestFilter(t *testing.T) {
 //TODO add testcase with randomized input
 
 func gotExpectedFilterResults(got, want schedulerapi.ExtenderFilterResult) bool {
-	if reflect.DeepEqual(got, want) {
-		return true
-	}
-	return false
+	return reflect.DeepEqual(got, want)
 }
 
 func gotExpectedPrioritizeList(got, want schedulerapi.HostPriorityList) bool {
