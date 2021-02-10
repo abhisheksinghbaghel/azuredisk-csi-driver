@@ -40,7 +40,7 @@ type AzVolumeSpec struct {
 
 // AzVolumeStatus is the status for a AzVolume resource
 type AzVolumeStatus struct {
-	UnderlyingVolume int32 `json:"underlyingVolume"`
+	State string `json:"state,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -68,12 +68,14 @@ type AzVolumeAttachment struct {
 
 // AzVolumeAttachmentSpec is the spec for a AzVolumeAttachment resource
 type AzVolumeAttachmentSpec struct {
-	UnderlyingVolume string `json:"underlyingVolume"`
+	AzVolumeName     string `json:"underlyingVolume"`
+	AzDriverNodeName string `json:"nodeWithVolumeAttachment"`
+	Partition        int32  `json:"partitionNumber"`
 }
 
 // AzVolumeAttachmentStatus is the status for a AzVolumeAttachment resource
 type AzVolumeAttachmentStatus struct {
-	UnderlyingVolume int32 `json:"underlyingVolume"`
+	State string `json:"state,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -101,12 +103,15 @@ type AzDriverNode struct {
 
 // AzDriverNodeSpec is the spec for a AzDriverNode resource
 type AzDriverNodeSpec struct {
-	UnderlyingNode string `json:"underlyingNode"`
+	CSINodeID string `json:"underlyingCSINode"`
+	NodeName  string `json:"underlyingNode"`
+	Partition int32  `json:"partitionNumber"`
+	Heartbeat string `json:"latestHeartbeatTime"`
 }
 
 // AzDriverNodeStatus is the status for a AzDriverNode resource
 type AzDriverNodeStatus struct {
-	UnderlyingNode int32 `json:"underlyingNode"`
+	State string `json:"state,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

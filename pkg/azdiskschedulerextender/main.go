@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -29,9 +28,15 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/component-base/metrics/legacyregistry"
 	"k8s.io/klog/v2"
 	schedulerapi "k8s.io/kube-scheduler/extender/v1"
+
+	clientSet "sigs.k8s.io/azuredisk-csi-driver/pkg/apis/client/clientset/versioned/typed/azuredisk/v1alpha1"
 )
 
 func init() {
@@ -39,8 +44,12 @@ func init() {
 }
 
 var (
-	metricsAddress              = flag.String("metrics-address", "0.0.0.0:29604", "export the metrics")
-	azDiskSchedulerExtenderPort = flag.String("port", "8080", "port used by az scheduler extender")
+	metricsAddress                    = flag.String("metrics-address", "0.0.0.0:29604", "export the metrics")
+	azDiskSchedulerExtenderPort       = flag.String("port", "8080", "port used by az scheduler extender")
+	kubeClient                        kubernetes.Interface
+	azKubeExtensionClient             clientSet.DiskV1alpha1Interface
+	azVolumeAttachmentExtensionClient clientSet.AzVolumeAttachmentInterface
+	azDriverNodeExtensionClient       clientSet.AzDriverNodeInterface
 )
 
 const (
@@ -50,6 +59,17 @@ const (
 	prioritizeRequestStr = apiPrefix + "/prioritize"
 	pingRequestStr       = "/ping"
 )
+
+func init() {
+
+	var err error
+	_, azKubeExtensionClient, azVolumeAttachmentExtensionClient, azDriverNodeExtensionClient, err = getKubernetesClient()
+
+	if err != nil {
+		klog.Fatalf("Failed to create kubernetes clinetset %s ...", err)
+		os.Exit(1)
+	}
+}
 
 func main() {
 	flag.Parse()
@@ -93,66 +113,113 @@ func handlePingRequest(response http.ResponseWriter, request *http.Request) {
 }
 
 func handleFilterRequest(response http.ResponseWriter, request *http.Request) {
+	var (
+		args              schedulerapi.ExtenderArgs
+		filteredNodes     []v1.Node
+		filteredNodeNames []string
+		failedNodes       map[string]string
+	)
+
+	if request.Body == nil {
+		klog.Errorf("handleFilterRequest: Error request body is empty.")
+		http.Error(response, "Error request body is empty", http.StatusBadRequest)
+		return
+	}
+
 	decoder := json.NewDecoder(request.Body)
-	defer func() {
-		if err := request.Body.Close(); err != nil {
-			klog.Errorf("handleFilterRequest: Error closing decoder: %v", err)
-		}
-	}()
 	encoder := json.NewEncoder(response)
 
-	var args schedulerapi.ExtenderArgs
 	if err := decoder.Decode(&args); err != nil {
 		klog.Errorf("handleFilterRequest: Error decoding filter request: %v", err)
 		http.Error(response, "Decode error", http.StatusBadRequest)
 		return
 	}
 
-	filteredNodes := args.Nodes.Items
+	allNodes := args.Nodes.Items
+	if len(allNodes) == 0 {
+		klog.Errorf("handleFilterRequest: No nodes received in filter request")
+		http.Error(response, "Bad request", http.StatusBadRequest)
+		return
+	}
+	azDriverNodes, _ := azDriverNodeExtensionClient.List(context.TODO(), metav1.ListOptions{})
 
-	// TODO: Filter the nodes based on node heartbeat and AzDiverNode CRI status
-	for _, node := range filteredNodes {
+	nodeNameToStatusMap := make(map[string]string)
+	for _, azDriverNode := range azDriverNodes.Items {
+		nodeNameToStatusMap[azDriverNode.Spec.NodeName] = azDriverNode.Status.State
+	}
+
+	// Filter the nodes based on AzDiverNode CRI status
+	failedNodes = make(map[string]string)
+	for _, node := range allNodes {
+		state, ok := nodeNameToStatusMap[node.Name]
+		if ok && state == "Ready" {
+			filteredNodes = append(filteredNodes, node)
+			filteredNodeNames = append(filteredNodeNames, node.Name)
+		} else {
+			failedNodes[node.Name] = fmt.Sprintf("AzDriverNodes for %s is not ready.", node.Name)
+		}
 		klog.V(2).Infof("handleFilterRequest: %v %+v", node.Name, node.Status.Addresses)
 	}
-	responseNodes := &schedulerapi.ExtenderFilterResult{
-		Nodes: &v1.NodeList{
-			Items: filteredNodes,
-		},
-	}
-	if err := encoder.Encode(responseNodes); err != nil {
-		klog.Errorf("handleFilterRequest: Error encoding filter response: %+v : %v", responseNodes, err)
+
+	responseBody := getFilterResponseBody(filteredNodes, filteredNodeNames, failedNodes, "")
+	if err := encoder.Encode(responseBody); err != nil {
+		klog.Errorf("handleFilterRequest: Error encoding filter response: %+v : %v", responseBody, err)
 	}
 }
 
 func handlePrioritizeRequest(response http.ResponseWriter, request *http.Request) {
+	var (
+		args     schedulerapi.ExtenderArgs
+		respList schedulerapi.HostPriorityList
+	)
+	if request.Body == nil {
+		klog.Errorf("handlePrioritizeRequest: Error request body is empty.")
+		http.Error(response, "Error request body is empty", http.StatusBadRequest)
+		return
+	}
+
 	decoder := json.NewDecoder(request.Body)
-
-	defer func() {
-		if err := request.Body.Close(); err != nil {
-			klog.Warningf("handlePrioritizeRequest: Error closing decoder: %v", err)
-		}
-	}()
-
 	encoder := json.NewEncoder(response)
-
-	var args schedulerapi.ExtenderArgs
 	if err := decoder.Decode(&args); err != nil {
-		klog.Errorf("handlePrioritizeRequest: Error decoding filter request: %v", err)
+		klog.Errorf("handlePrioritizeRequest: Error decoding prioritize request: %v", err)
 		http.Error(response, "Decode error", http.StatusBadRequest)
 		return
 	}
 
-	respList := schedulerapi.HostPriorityList{}
-	rand.Seed(time.Now().UnixNano())
-	for _, node := range args.Nodes.Items {
-		score := getNodeScore(&node)
-		hostPriority := schedulerapi.HostPriority{Host: node.Name, Score: score}
-		respList = append(respList, hostPriority)
-	}
+	//TODO add RWM volume case here
+	if args.Pod.Spec.Volumes == nil {
+		for _, node := range args.Nodes.Items {
+			hostPriority := schedulerapi.HostPriority{Host: node.Name, Score: 0}
+			respList = append(respList, hostPriority)
+		}
+	} else {
+		volumesPodNeeds := make(map[string]bool)
+		nodeNameToVolumeMap := make(map[string][]string)
+		nodeNameToHeartbeatMap := make(map[string]string)
+		for _, volume := range args.Pod.Spec.Volumes {
+			volumesPodNeeds[volume.Name] = true
+		}
 
-	klog.V(2).Infof("handlePrioritizeRequest: Nodes for pod %+v in response:", args.Pod)
-	for _, node := range respList {
-		klog.V(2).Infof("handlePrioritizeRequest: %+v", node)
+		azDriverNodes, _ := azDriverNodeExtensionClient.List(context.TODO(), metav1.ListOptions{})
+		for _, azDriverNode := range azDriverNodes.Items {
+			nodeNameToHeartbeatMap[azDriverNode.Spec.NodeName] = azDriverNode.Spec.Heartbeat
+		}
+
+		azVolumeAttachment, _ := azVolumeAttachmentExtensionClient.List(context.TODO(), metav1.ListOptions{})
+		for _, attachedVolume := range azVolumeAttachment.Items {
+			_, needs := volumesPodNeeds[attachedVolume.Spec.AzVolumeName]
+			if needs {
+				nodeNameToVolumeMap[attachedVolume.Spec.AzDriverNodeName] = append(nodeNameToVolumeMap[attachedVolume.Spec.AzDriverNodeName], attachedVolume.Name)
+			}
+		}
+
+		klog.V(2).Infof("handlePrioritizeRequest: Nodes for pod %+v in response:", args.Pod)
+		for _, node := range args.Nodes.Items {
+			score := getNodeScore(len(nodeNameToVolumeMap[node.Name]), nodeNameToHeartbeatMap[node.Name])
+			hostPriority := schedulerapi.HostPriority{Host: node.Name, Score: score}
+			respList = append(respList, hostPriority)
+			klog.V(2).Infof("handlePrioritizeRequest: %+v", node)
+		}
 	}
 
 	if err := encoder.Encode(respList); err != nil {
@@ -160,9 +227,22 @@ func handlePrioritizeRequest(response http.ResponseWriter, request *http.Request
 	}
 }
 
-// TODO: Populate the node score based on number of disks already attached.
-func getNodeScore(node *v1.Node) int64 {
-	score := rand.Int63()
+func getNodeScore(volumeAttachments int, heartbeat string) int64 {
+	// TODO: prioritize disks with low additional volume attachments
+	now := time.Now()
+	latestHeartbeatWas, err := time.Parse(time.UnixDate, heartbeat)
+	if err != nil {
+		return 0
+	}
+
+	latestHeartbeatCanBe := now.Add(-2 * time.Minute)
+	klog.V(2).Infof("Latest node heartbeat was: %s. Latest accepted heartbeat can be: %s", heartbeat, latestHeartbeatCanBe.Format(time.UnixDate))
+
+	if latestHeartbeatWas.Before(latestHeartbeatCanBe) {
+		return 0
+	}
+
+	score := int64(volumeAttachments*100) - int64(now.Sub(latestHeartbeatWas)/10000000000) //TODO fix logic when all variables are finalized
 	return score
 }
 
@@ -200,4 +280,50 @@ func trapClosedConnErr(err error) error {
 		return nil
 	}
 	return err
+}
+
+func getKubernetesClient() (kubernetes.Interface, clientSet.DiskV1alpha1Interface, clientSet.AzVolumeAttachmentInterface, clientSet.AzDriverNodeInterface, error) {
+
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		// fallback to kubeconfig
+		kubeConfigPath := os.Getenv("KUBERNETES_KUBE_CONFIG")
+		if strings.EqualFold(kubeConfigPath, "") {
+			kubeConfigPath = os.Getenv("HOME") + "/.kube/config"
+		}
+
+		// create the config from the path
+		config, err = clientcmd.BuildConfigFromFlags("", kubeConfigPath)
+		if err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("Cannot load kubeconfig: %v", err)
+		}
+	}
+
+	// generate the client based off of the config
+	kubeClient, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("Cannot create kubernetes client: %v", err)
+	}
+
+	// generate the clientset extension based off of the config
+	azKubeExtensionClient, err := clientSet.NewForConfig(config)
+	if err != nil {
+		return kubeClient, nil, nil, nil, fmt.Errorf("Cannot create clientset: %v", err)
+	}
+	azVolumeAttachmentExtensionClient := azKubeExtensionClient.AzVolumeAttachments("")
+	azDriverNodeExtensionClient := azKubeExtensionClient.AzDriverNodes("")
+
+	klog.Info("Successfully constructed kubernetes client and extension clientset")
+	return kubeClient, azKubeExtensionClient, azVolumeAttachmentExtensionClient, azDriverNodeExtensionClient, nil
+}
+
+func getFilterResponseBody(filteredNodes []v1.Node, nodeNames []string, failedNodes map[string]string, errorMessage string) *schedulerapi.ExtenderFilterResult {
+	return &schedulerapi.ExtenderFilterResult{
+		Nodes: &v1.NodeList{
+			Items: filteredNodes,
+		},
+		NodeNames:   &nodeNames,
+		FailedNodes: failedNodes,
+		Error:       errorMessage,
+	}
 }
