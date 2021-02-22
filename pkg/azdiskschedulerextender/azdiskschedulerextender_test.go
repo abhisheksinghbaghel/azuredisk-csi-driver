@@ -111,7 +111,7 @@ func TestFilterAndPrioritizeRequestResponseCode(t *testing.T) {
 	}
 }
 
-func TestFilter(t *testing.T) {
+func TestFilterAndPrioritizeResponses(t *testing.T) {
 	tests := []struct {
 		name                     string
 		azVolumeAttachment       []runtime.Object

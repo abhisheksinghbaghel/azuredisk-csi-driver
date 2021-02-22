@@ -27,10 +27,6 @@ import (
 	"strings"
 	"time"
 
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/component-base/metrics/legacyregistry"
 	"k8s.io/klog/v2"
 	schedulerapi "k8s.io/kube-scheduler/extender/v1"
@@ -111,12 +107,7 @@ func handlePingRequest(response http.ResponseWriter, request *http.Request) {
 }
 
 func handleFilterRequest(response http.ResponseWriter, request *http.Request) {
-	var (
-		args              schedulerapi.ExtenderArgs
-		filteredNodes     []v1.Node
-		filteredNodeNames []string
-		failedNodes       map[string]string
-	)
+	var args schedulerapi.ExtenderArgs
 
 	if request.Body == nil {
 		klog.Errorf("handleFilterRequest: Error request body is empty.")
@@ -139,37 +130,20 @@ func handleFilterRequest(response http.ResponseWriter, request *http.Request) {
 		http.Error(response, "Bad request", http.StatusBadRequest)
 		return
 	}
-	azDriverNodes, _ := azDriverNodeExtensionClient.List(context.TODO(), metav1.ListOptions{})
 
-	nodeNameToStatusMap := make(map[string]string)
-	for _, azDriverNode := range azDriverNodes.Items {
-		nodeNameToStatusMap[azDriverNode.Spec.NodeName] = azDriverNode.Status.State
+	responseBody, err := filter(args)
+	if err != nil {
+		http.Error(response, "Bad request", http.StatusServiceUnavailable)
 	}
 
-	// Filter the nodes based on AzDiverNode CRI status
-	failedNodes = make(map[string]string)
-	for _, node := range allNodes {
-		state, ok := nodeNameToStatusMap[node.Name]
-		if ok && state == "Ready" {
-			filteredNodes = append(filteredNodes, node)
-			filteredNodeNames = append(filteredNodeNames, node.Name)
-		} else {
-			failedNodes[node.Name] = fmt.Sprintf("AzDriverNodes for %s is not ready.", node.Name)
-		}
-		klog.V(2).Infof("handleFilterRequest: %v %+v", node.Name, node.Status.Addresses)
-	}
-
-	responseBody := getFilterResponseBody(filteredNodes, filteredNodeNames, failedNodes, "")
 	if err := encoder.Encode(responseBody); err != nil {
 		klog.Errorf("handleFilterRequest: Error encoding filter response: %+v : %v", responseBody, err)
 	}
 }
 
 func handlePrioritizeRequest(response http.ResponseWriter, request *http.Request) {
-	var (
-		args     schedulerapi.ExtenderArgs
-		respList schedulerapi.HostPriorityList
-	)
+	var args schedulerapi.ExtenderArgs
+
 	if request.Body == nil {
 		klog.Errorf("handlePrioritizeRequest: Error request body is empty.")
 		http.Error(response, "Error request body is empty", http.StatusBadRequest)
@@ -184,64 +158,14 @@ func handlePrioritizeRequest(response http.ResponseWriter, request *http.Request
 		return
 	}
 
-	//TODO add RWM volume case here
-	if args.Pod.Spec.Volumes == nil {
-		for _, node := range args.Nodes.Items {
-			hostPriority := schedulerapi.HostPriority{Host: node.Name, Score: 0}
-			respList = append(respList, hostPriority)
-		}
-	} else {
-		volumesPodNeeds := make(map[string]bool)
-		nodeNameToVolumeMap := make(map[string][]string)
-		nodeNameToHeartbeatMap := make(map[string]string)
-		for _, volume := range args.Pod.Spec.Volumes {
-			volumesPodNeeds[volume.Name] = true
-		}
-
-		azDriverNodes, _ := azDriverNodeExtensionClient.List(context.TODO(), metav1.ListOptions{})
-		for _, azDriverNode := range azDriverNodes.Items {
-			nodeNameToHeartbeatMap[azDriverNode.Spec.NodeName] = azDriverNode.Spec.Heartbeat
-		}
-
-		azVolumeAttachment, _ := azVolumeAttachmentExtensionClient.List(context.TODO(), metav1.ListOptions{})
-		for _, attachedVolume := range azVolumeAttachment.Items {
-			_, needs := volumesPodNeeds[attachedVolume.Spec.AzVolumeName]
-			if needs {
-				nodeNameToVolumeMap[attachedVolume.Spec.AzDriverNodeName] = append(nodeNameToVolumeMap[attachedVolume.Spec.AzDriverNodeName], attachedVolume.Name)
-			}
-		}
-
-		klog.V(2).Infof("handlePrioritizeRequest: Nodes for pod %+v in response:", args.Pod)
-		for _, node := range args.Nodes.Items {
-			score := getNodeScore(len(nodeNameToVolumeMap[node.Name]), nodeNameToHeartbeatMap[node.Name])
-			hostPriority := schedulerapi.HostPriority{Host: node.Name, Score: score}
-			respList = append(respList, hostPriority)
-			klog.V(2).Infof("handlePrioritizeRequest: %+v", node)
-		}
+	responseBody, err := prioritize(args)
+	if err != nil {
+		http.Error(response, "Bad request", http.StatusServiceUnavailable)
 	}
 
-	if err := encoder.Encode(respList); err != nil {
+	if err := encoder.Encode(responseBody); err != nil {
 		klog.Errorf("handlePrioritizeRequest: Failed to encode response: %v", err)
 	}
-}
-
-func getNodeScore(volumeAttachments int, heartbeat string) int64 {
-	// TODO: prioritize disks with low additional volume attachments
-	now := time.Now()
-	latestHeartbeatWas, err := time.Parse(time.UnixDate, heartbeat)
-	if err != nil {
-		return 0
-	}
-
-	latestHeartbeatCanBe := now.Add(-2 * time.Minute)
-	klog.V(2).Infof("Latest node heartbeat was: %s. Latest accepted heartbeat can be: %s", heartbeat, latestHeartbeatCanBe.Format(time.UnixDate))
-
-	if latestHeartbeatWas.Before(latestHeartbeatCanBe) {
-		return 0
-	}
-
-	score := int64(volumeAttachments*100) - int64(now.Sub(latestHeartbeatWas)/10000000000) //TODO fix logic when all variables are finalized
-	return score
 }
 
 func exportMetrics() {
@@ -278,44 +202,4 @@ func trapClosedConnErr(err error) error {
 		return nil
 	}
 	return err
-}
-
-func getKubernetesClient() (clientSet.AzVolumeAttachmentInterface, clientSet.AzDriverNodeInterface, error) {
-
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		// fallback to kubeconfig
-		kubeConfigPath := os.Getenv("KUBERNETES_KUBE_CONFIG")
-		if strings.EqualFold(kubeConfigPath, "") {
-			kubeConfigPath = os.Getenv("HOME") + "/.kube/config"
-		}
-
-		// create the config from the path
-		config, err = clientcmd.BuildConfigFromFlags("", kubeConfigPath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("Cannot load kubeconfig: %v", err)
-		}
-	}
-
-	// generate the clientset extension based off of the config
-	azKubeExtensionClient, err := clientSet.NewForConfig(config)
-	if err != nil {
-		return nil, nil, fmt.Errorf("Cannot create clientset: %v", err)
-	}
-	azVolumeAttachmentExtensionClient := azKubeExtensionClient.AzVolumeAttachments("")
-	azDriverNodeExtensionClient := azKubeExtensionClient.AzDriverNodes("")
-
-	klog.Info("Successfully constructed kubernetes client and extension clientset")
-	return azVolumeAttachmentExtensionClient, azDriverNodeExtensionClient, nil
-}
-
-func getFilterResponseBody(filteredNodes []v1.Node, nodeNames []string, failedNodes map[string]string, errorMessage string) *schedulerapi.ExtenderFilterResult {
-	return &schedulerapi.ExtenderFilterResult{
-		Nodes: &v1.NodeList{
-			Items: filteredNodes,
-		},
-		NodeNames:   &nodeNames,
-		FailedNodes: failedNodes,
-		Error:       errorMessage,
-	}
 }
