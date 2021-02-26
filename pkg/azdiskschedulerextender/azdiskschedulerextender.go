@@ -20,7 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
+	"path/filepath"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -30,8 +30,24 @@ import (
 	"k8s.io/klog/v2"
 	schedulerapi "k8s.io/kube-scheduler/extender/v1"
 
+	v1alpha1Meta "sigs.k8s.io/azuredisk-csi-driver/pkg/apis/azuredisk/v1alpha1"
 	clientSet "sigs.k8s.io/azuredisk-csi-driver/pkg/apis/client/clientset/versioned/typed/azuredisk/v1alpha1"
 )
+
+var (
+	azVolumeAttachmentExtensionClient clientSet.AzVolumeAttachmentInterface
+	azDriverNodeExtensionClient       clientSet.AzDriverNodeInterface
+)
+
+type azDriverNodesMeta struct {
+	nodes *v1alpha1Meta.AzDriverNodeList
+	err   error
+}
+
+type azVolumeAttachmentsMeta struct {
+	volumes *v1alpha1Meta.AzVolumeAttachmentList
+	err     error
+}
 
 func init() {
 
@@ -44,24 +60,26 @@ func init() {
 	}
 }
 
-func filter(schedulerExtenderArgs schedulerapi.ExtenderArgs) (*schedulerapi.ExtenderFilterResult, error) {
+func filter(context context.Context, schedulerExtenderArgs schedulerapi.ExtenderArgs) (*schedulerapi.ExtenderFilterResult, error) {
 	var (
 		filteredNodes     []v1.Node
 		filteredNodeNames []string
 		failedNodes       map[string]string
 	)
 
+	nodesChan := make(chan azDriverNodesMeta)
 	// all available cluster nodes
 	allNodes := schedulerExtenderArgs.Nodes.Items
-	// all nodes that have azDriverNode running
-	azDriverNodes, err := azDriverNodeExtensionClient.List(context.TODO(), metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("Failed to get the list of azDriverNodes: %v", err)
+
+	go getAzDriverNodes(context, nodesChan)
+	azDriverNodesMeta := <-nodesChan
+	if azDriverNodesMeta.err != nil {
+		return nil, fmt.Errorf("Failed to get the list of azDriverNodes: %v", azDriverNodesMeta.err)
 	}
 
 	// map node name to azDriverNode state
 	nodeNameToStatusMap := make(map[string]string)
-	for _, azDriverNode := range azDriverNodes.Items {
+	for _, azDriverNode := range azDriverNodesMeta.nodes.Items {
 		nodeNameToStatusMap[azDriverNode.Spec.NodeName] = azDriverNode.Status.State
 	}
 
@@ -81,46 +99,50 @@ func filter(schedulerExtenderArgs schedulerapi.ExtenderArgs) (*schedulerapi.Exte
 	return formatFilterResult(filteredNodes, filteredNodeNames, failedNodes, ""), nil
 }
 
-func prioritize(schedulerExtenderArgs schedulerapi.ExtenderArgs) (priorityList schedulerapi.HostPriorityList, err error) {
+func prioritize(context context.Context, schedulerExtenderArgs schedulerapi.ExtenderArgs) (priorityList schedulerapi.HostPriorityList, err error) {
 
 	availableNodes := schedulerExtenderArgs.Nodes.Items
 	requestedVolumes := schedulerExtenderArgs.Pod.Spec.Volumes
 
 	//TODO add RWM volume case here
 	// if no volumes are requested, return assigning 0 score to all nodes
-	if requestedVolumes == nil {
+	if len(requestedVolumes) == 0 {
 		for _, node := range availableNodes {
 			hostPriority := schedulerapi.HostPriority{Host: node.Name, Score: 0}
 			priorityList = append(priorityList, hostPriority)
 		}
 	} else {
-		volumesPodNeeds := make(map[string]bool)
-		nodeNameToVolumeMap := make(map[string][]string)
-		nodeNameToHeartbeatMap := make(map[string]string)
+		volumesPodNeeds := make(map[string]struct{})
+		nodeNameToVolumeMap, nodeNameToHeartbeatMap := make(map[string][]string), make(map[string]string)
+		nodesChan, volumesChan := make(chan azDriverNodesMeta), make(chan azVolumeAttachmentsMeta)
+
+		go getAzDriverNodes(context, nodesChan)
+		go getAzVolumeAttachments(context, volumesChan)
 
 		// create a lookup map of all the volumes the pod needs
 		for _, volume := range requestedVolumes {
-			volumesPodNeeds[volume.Name] = true
+			volumesPodNeeds[volume.Name] = struct{}{}
 		}
 
 		// get all nodes that have azDriverNode running
-		azDriverNodes, err := azDriverNodeExtensionClient.List(context.TODO(), metav1.ListOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("Failed to get the list of azDriverNodes: %v", err)
+		azDriverNodesMeta := <-nodesChan
+		if azDriverNodesMeta.err != nil {
+			return nil, fmt.Errorf("Failed to get the list of azDriverNodes: %v", azDriverNodesMeta.err)
 		}
+
 		// map azDriverNode name to its heartbeat
-		for _, azDriverNode := range azDriverNodes.Items {
+		for _, azDriverNode := range azDriverNodesMeta.nodes.Items {
 			nodeNameToHeartbeatMap[azDriverNode.Spec.NodeName] = azDriverNode.Spec.Heartbeat
 		}
 
 		// get all azVolumeAttachments running in the cluster
-		azVolumeAttachment, err := azVolumeAttachmentExtensionClient.List(context.TODO(), metav1.ListOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("Failed to get the list of azVolumeAttachments: %v", err)
+		azVolumeAttachmentsMeta := <-volumesChan
+		if azVolumeAttachmentsMeta.err != nil {
+			return nil, fmt.Errorf("Failed to get the list of azVolumeAttachments: %v", azVolumeAttachmentsMeta.err)
 		}
 
 		// for every volume the pod needs, append its azVolumeAttachment name to the node name
-		for _, attachedVolume := range azVolumeAttachment.Items {
+		for _, attachedVolume := range azVolumeAttachmentsMeta.volumes.Items {
 			_, needs := volumesPodNeeds[attachedVolume.Spec.AzVolumeName]
 			if needs {
 				nodeNameToVolumeMap[attachedVolume.Spec.AzDriverNodeName] = append(nodeNameToVolumeMap[attachedVolume.Spec.AzDriverNodeName], attachedVolume.Name)
@@ -144,9 +166,9 @@ func getKubernetesClient() (clientSet.AzVolumeAttachmentInterface, clientSet.AzD
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		// fallback to kubeconfig
-		kubeConfigPath := os.Getenv("KUBERNETES_KUBE_CONFIG")
-		if strings.EqualFold(kubeConfigPath, "") {
-			kubeConfigPath = os.Getenv("HOME") + "/.kube/config"
+		kubeConfigPath := os.Getenv("KUBECONFIG")
+		if len(kubeConfigPath) == 0 {
+			kubeConfigPath = filepath.Join(os.Getenv("HOME"), ".kube", "config")
 		}
 
 		// create the config from the path
@@ -185,6 +207,20 @@ func getNodeScore(volumeAttachments int, heartbeat string) int64 {
 
 	score := int64(volumeAttachments*100) - int64(now.Sub(latestHeartbeatWas)/10000000000) //TODO fix logic when all variables are finalized
 	return score
+}
+
+func getAzDriverNodes(context context.Context, out chan azDriverNodesMeta) {
+	// get all nodes that have azDriverNode running
+	var activeDriverNodes azDriverNodesMeta
+	activeDriverNodes.nodes, activeDriverNodes.err = azDriverNodeExtensionClient.List(context, metav1.ListOptions{})
+	out <- activeDriverNodes
+}
+
+func getAzVolumeAttachments(context context.Context, out chan azVolumeAttachmentsMeta) {
+	// get all azVolumeAttachments running in the cluster
+	var activeVolumeAttachments azVolumeAttachmentsMeta
+	activeVolumeAttachments.volumes, activeVolumeAttachments.err = azVolumeAttachmentExtensionClient.List(context, metav1.ListOptions{})
+	out <- activeVolumeAttachments
 }
 
 func formatFilterResult(filteredNodes []v1.Node, nodeNames []string, failedNodes map[string]string, errorMessage string) *schedulerapi.ExtenderFilterResult {

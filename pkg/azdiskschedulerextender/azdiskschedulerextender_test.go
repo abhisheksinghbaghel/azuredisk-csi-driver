@@ -66,7 +66,6 @@ func TestFilterAndPrioritizeRequestResponseCode(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		//requestArgs := reflect.TypeOf(test.inputArgs).String()
 		//save original clients
 		savedAzVolumeAttachmentExtensionClient := azVolumeAttachmentExtensionClient
 		savedAzDriverNodeExtensionClient := azDriverNodeExtensionClient

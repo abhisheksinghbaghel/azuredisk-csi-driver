@@ -30,8 +30,6 @@ import (
 	"k8s.io/component-base/metrics/legacyregistry"
 	"k8s.io/klog/v2"
 	schedulerapi "k8s.io/kube-scheduler/extender/v1"
-
-	clientSet "sigs.k8s.io/azuredisk-csi-driver/pkg/apis/client/clientset/versioned/typed/azuredisk/v1alpha1"
 )
 
 func init() {
@@ -41,9 +39,6 @@ func init() {
 var (
 	metricsAddress              = flag.String("metrics-address", "0.0.0.0:29604", "export the metrics")
 	azDiskSchedulerExtenderPort = flag.String("port", "8080", "port used by az scheduler extender")
-
-	azVolumeAttachmentExtensionClient clientSet.AzVolumeAttachmentInterface
-	azDriverNodeExtensionClient       clientSet.AzDriverNodeInterface
 )
 
 const (
@@ -53,17 +48,6 @@ const (
 	prioritizeRequestStr = apiPrefix + "/prioritize"
 	pingRequestStr       = "/ping"
 )
-
-func init() {
-
-	var err error
-	azVolumeAttachmentExtensionClient, azDriverNodeExtensionClient, err = getKubernetesClient()
-
-	if err != nil {
-		klog.Fatalf("Failed to create kubernetes clinetset %s ...", err)
-		os.Exit(1)
-	}
-}
 
 func main() {
 	flag.Parse()
@@ -131,13 +115,15 @@ func handleFilterRequest(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	responseBody, err := filter(args)
+	responseBody, err := filter(request.Context(), args)
 	if err != nil {
-		http.Error(response, "Bad request", http.StatusServiceUnavailable)
+		http.Error(response, "Service Unavailable", http.StatusServiceUnavailable)
+		return
 	}
 
 	if err := encoder.Encode(responseBody); err != nil {
 		klog.Errorf("handleFilterRequest: Error encoding filter response: %+v : %v", responseBody, err)
+		return
 	}
 }
 
@@ -158,13 +144,15 @@ func handlePrioritizeRequest(response http.ResponseWriter, request *http.Request
 		return
 	}
 
-	responseBody, err := prioritize(args)
+	responseBody, err := prioritize(request.Context(), args)
 	if err != nil {
-		http.Error(response, "Bad request", http.StatusServiceUnavailable)
+		http.Error(response, "Service Unavailable", http.StatusServiceUnavailable)
+		return
 	}
 
 	if err := encoder.Encode(responseBody); err != nil {
 		klog.Errorf("handlePrioritizeRequest: Failed to encode response: %v", err)
+		return
 	}
 }
 
