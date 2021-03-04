@@ -25,7 +25,6 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
@@ -199,18 +198,19 @@ func getKubernetesExtensionClientsets() (azKubeExtensionClientset *clientSet.Dis
 	return azKubeExtensionClientset, nil
 }
 
-func getKubernetesClientset() (*kubernetes.Clientset, error) {
+// TODO add back with integration tests
+// func getKubernetesClientset() (*kubernetes.Clientset, error) {
 
-	// getKubeConfig gets config object from config file
-	config, err := getKubeConfig()
+// 	// getKubeConfig gets config object from config file
+// 	config, err := getKubeConfig()
 
-	// generate the clientset extension based off of the config
-	kubeClient, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, fmt.Errorf("Cannot create kubernetes client: %v", err)
-	}
-	return kubeClient, nil
-}
+// 	// generate the clientset extension based off of the config
+// 	kubeClient, err := kubernetes.NewForConfig(config)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("Cannot create kubernetes client: %v", err)
+// 	}
+// 	return kubeClient, nil
+// }
 
 func getNodeScore(volumeAttachments int, heartbeat string) int64 {
 	// TODO: prioritize disks with low additional volume attachments

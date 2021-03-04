@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -562,6 +563,7 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 			var actualFilterResult schedulerapi.ExtenderFilterResult
 			if err := decoder.Decode(&actualFilterResult); err != nil {
 				klog.Errorf("handleFilterRequest: Error decoding filter request: %v", err)
+				t.Fatal(err)
 			}
 
 			if !gotExpectedFilterResults(actualFilterResult, test.expectedFilterResult) {
@@ -581,6 +583,7 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 			var actualPrioritizeList schedulerapi.HostPriorityList
 			if err := decoder.Decode(&actualPrioritizeList); err != nil {
 				klog.Errorf("handlePrioritizeRequest: Error decoding filter request: %v", err)
+				t.Fatal(err)
 			}
 
 			if !gotExpectedPrioritizeList(actualPrioritizeList, test.expectedPrioritizeResult) {
@@ -597,6 +600,7 @@ func TestFilterAndPrioritizeInRandomizedLargeCluster(t *testing.T) {
 	var nodes []v1.Node
 	var nodeNames []string
 	var tokens = make(chan struct{}, 20)
+	var wg sync.WaitGroup
 
 	numberOfClusterNodes := 5000
 	numberOfClusterVolumes := 30000
@@ -635,8 +639,11 @@ func TestFilterAndPrioritizeInRandomizedLargeCluster(t *testing.T) {
 	azVolumeAttachmentExtensionClient = testClientSet.DiskV1alpha1().AzVolumeAttachments(ns)
 	azDriverNodeExtensionClient = testClientSet.DiskV1alpha1().AzDriverNodes(ns)
 
+	var errorChan = make(chan error, numberOfPodsToSchedule)
 	for j := 0; j < numberOfPodsToSchedule; j++ {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			var testPodVolumes []v1.Volume
 			// randomly assign volumes to pod
 			podVolCount := rand.Intn(numberOfClusterVolumes)
@@ -659,43 +666,63 @@ func TestFilterAndPrioritizeInRandomizedLargeCluster(t *testing.T) {
 			responsePrioritize := httptest.NewRecorder()
 			requestArgs, err := json.Marshal(schedulerArgs)
 			if err != nil {
-				t.Fatal("Json encoding failed")
+				errorChan <- fmt.Errorf("Json encoding failed")
+				return
 			}
 
 			tokens <- struct{}{} // acquire a token
 			filterRequest, err := http.NewRequest("POST", filterRequestStr, bytes.NewReader(requestArgs))
 			if err != nil {
-				t.Fatal(err)
+				errorChan <- err
+				return
 			}
 
 			handlerFilter.ServeHTTP(responseFilter, filterRequest)
 			if responseFilter.Code != 200 {
-				t.Errorf("Filter request failed for %s. Got %d want %d", requestArgs, responseFilter.Code, 200)
+				errorChan <- fmt.Errorf("Filter request failed for %s. Got %d want %d", requestArgs, responseFilter.Code, 200)
+				return
 			}
 
 			prioritizeRequest, err := http.NewRequest("POST", prioritizeRequestStr, bytes.NewReader(requestArgs))
 			if err != nil {
-				t.Fatal(err)
+				errorChan <- err
+				return
 			}
 
 			handlerPrioritize.ServeHTTP(responsePrioritize, prioritizeRequest)
 			if responsePrioritize.Code != 200 {
-				t.Errorf("Filter request failed for %s. Got %d want %d", requestArgs, responsePrioritize.Code, 200)
+				errorChan <- fmt.Errorf("Filter request failed for %s. Got %d want %d", requestArgs, responsePrioritize.Code, 200)
+				return
 			}
 
 			decoder := json.NewDecoder(responseFilter.Body)
 			var filterResult schedulerapi.ExtenderFilterResult
 			if err := decoder.Decode(&filterResult); err != nil {
-				klog.Errorf("handleFilterRequest: Error decoding filter request: %v", err)
+				errorChan <- fmt.Errorf("handleFilterRequest: Error decoding filter request: %v", err)
+				return
 			}
 
 			decoder = json.NewDecoder(responsePrioritize.Body)
 			var prioritizeList schedulerapi.HostPriorityList
 			if err := decoder.Decode(&prioritizeList); err != nil {
-				klog.Errorf("handlePrioritizeRequest: Error decoding filter request: %v", err)
+				errorChan <- fmt.Errorf("handlePrioritizeRequest: Error decoding filter request: %v", err)
+				return
 			}
+			errorChan <- nil
 			<-tokens //release the token
 		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(errorChan)
+		close(tokens)
+	}()
+
+	err := <-errorChan
+	if err != nil {
+		klog.Errorf("Error during stress test: %v ", err)
+		t.Fatal(err)
 	}
 }
 
@@ -756,20 +783,21 @@ func getDriverNode(driverNodeName, ns, nodeName, state string) v1alpha1Client.Az
 
 }
 
-func getPod(podName, ns, containerName, containerImage string) *v1.Pod {
-	return &v1.Pod{
-		ObjectMeta: meta.ObjectMeta{
-			Name:      podName,
-			Namespace: ns,
-		},
-		Spec: v1.PodSpec{
-			SchedulerName: "azdiskschedulerextender",
-			Containers: []v1.Container{
-				v1.Container{
-					Name:  containerName,
-					Image: containerImage,
-				},
-			},
-		},
-	}
-}
+// TODO add back with integration tests
+// func getPod(podName, ns, containerName, containerImage string) *v1.Pod {
+// 	return &v1.Pod{
+// 		ObjectMeta: meta.ObjectMeta{
+// 			Name:      podName,
+// 			Namespace: ns,
+// 		},
+// 		Spec: v1.PodSpec{
+// 			SchedulerName: "azdiskschedulerextender",
+// 			Containers: []v1.Container{
+// 				v1.Container{
+// 					Name:  containerName,
+// 					Image: containerImage,
+// 				},
+// 			},
+// 		},
+// 	}
+// }
