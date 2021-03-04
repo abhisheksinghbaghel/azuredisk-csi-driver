@@ -19,6 +19,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -27,12 +29,10 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 	schedulerapi "k8s.io/kube-scheduler/extender/v1"
 	v1alpha1Client "sigs.k8s.io/azuredisk-csi-driver/pkg/apis/azuredisk/v1alpha1"
 	fakeClientSet "sigs.k8s.io/azuredisk-csi-driver/pkg/apis/client/clientset/versioned/fake"
-	fakeClientSetInterface "sigs.k8s.io/azuredisk-csi-driver/pkg/apis/client/clientset/versioned/typed/azuredisk/v1alpha1/fake"
 )
 
 var (
@@ -45,10 +45,6 @@ func TestFilterAndPrioritizeRequestResponseCode(t *testing.T) {
 		inputArgs interface{}
 		want      int
 	}{
-		{
-			inputArgs: "{}",
-			want:      http.StatusBadRequest,
-		},
 		{
 			inputArgs: &schedulerapi.ExtenderArgs{
 				Pod:       &v1.Pod{ObjectMeta: meta.ObjectMeta{Name: "pod"}},
@@ -75,12 +71,20 @@ func TestFilterAndPrioritizeRequestResponseCode(t *testing.T) {
 		}()
 
 		// continue with fake clients
-		dummyVolumeAttachment := getVolumeAttachment("volumeAttachment", "vol", "node", "Ready")
-		dummyDriverNode := getDriverNode("azDriverNode", "0", "node", "Ready")
-		fakeVolumeClient := fakeClientSet.NewSimpleClientset(dummyVolumeAttachment)
-		fakeNodeDriverClient := fakeClientSet.NewSimpleClientset(dummyDriverNode)
-		azVolumeAttachmentExtensionClient = &fakeClientSetInterface.FakeAzVolumeAttachments{Fake: &fakeClientSetInterface.FakeDiskV1alpha1{&fakeVolumeClient.Fake}}
-		azDriverNodeExtensionClient = &fakeClientSetInterface.FakeAzDriverNodes{Fake: &fakeClientSetInterface.FakeDiskV1alpha1{&fakeNodeDriverClient.Fake}}
+		testClientSet := fakeClientSet.NewSimpleClientset(
+			&v1alpha1Client.AzVolumeAttachmentList{
+				Items: []v1alpha1Client.AzVolumeAttachment{
+					getVolumeAttachment("volumeAttachment", ns, "vol", "node", "Ready"),
+				},
+			},
+			&v1alpha1Client.AzDriverNodeList{
+				Items: []v1alpha1Client.AzDriverNode{
+					getDriverNode("driverNode", ns, "node", "Ready"),
+				},
+			},
+		)
+		azVolumeAttachmentExtensionClient = testClientSet.DiskV1alpha1().AzVolumeAttachments(ns)
+		azDriverNodeExtensionClient = testClientSet.DiskV1alpha1().AzDriverNodes(ns)
 
 		response := httptest.NewRecorder()
 		requestArgs, err := json.Marshal(test.inputArgs)
@@ -88,7 +92,7 @@ func TestFilterAndPrioritizeRequestResponseCode(t *testing.T) {
 			t.Fatal("Json encoding failed")
 		}
 
-		filterRequest, err := http.NewRequest("GET", filterRequestStr, bytes.NewReader(requestArgs))
+		filterRequest, err := http.NewRequest("POST", filterRequestStr, bytes.NewReader(requestArgs))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -98,7 +102,7 @@ func TestFilterAndPrioritizeRequestResponseCode(t *testing.T) {
 			t.Errorf("Filter request failed for %s. Got %d want %d", requestArgs, response.Code, test.want)
 		}
 
-		prioritizeRequest, err := http.NewRequest("GET", prioritizeRequestStr, bytes.NewReader(requestArgs))
+		prioritizeRequest, err := http.NewRequest("POST", prioritizeRequestStr, bytes.NewReader(requestArgs))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -113,16 +117,25 @@ func TestFilterAndPrioritizeRequestResponseCode(t *testing.T) {
 func TestFilterAndPrioritizeResponses(t *testing.T) {
 	tests := []struct {
 		name                     string
-		azVolumeAttachment       []runtime.Object
-		azDriverNode             []runtime.Object
+		testClientSet            *fakeClientSet.Clientset
 		schedulerArgs            schedulerapi.ExtenderArgs
 		expectedFilterResult     schedulerapi.ExtenderFilterResult
 		expectedPrioritizeResult schedulerapi.HostPriorityList
 	}{
 		{
-			name:               "Test simple case of one pod/node/volume",
-			azVolumeAttachment: []runtime.Object{getVolumeAttachment("volumeAttachment", "vol", "node", "Ready")},
-			azDriverNode:       []runtime.Object{getDriverNode("driverNode", "0", "node", "Ready")},
+			name: "Test simple case of one pod/node/volume",
+			testClientSet: fakeClientSet.NewSimpleClientset(
+				&v1alpha1Client.AzVolumeAttachmentList{
+					Items: []v1alpha1Client.AzVolumeAttachment{
+						getVolumeAttachment("volumeAttachment", ns, "vol", "node", "Ready"),
+					},
+				},
+				&v1alpha1Client.AzDriverNodeList{
+					Items: []v1alpha1Client.AzDriverNode{
+						getDriverNode("driverNode", ns, "node", "Ready"),
+					},
+				},
+			),
 			schedulerArgs: schedulerapi.ExtenderArgs{
 				Pod: &v1.Pod{
 					ObjectMeta: meta.ObjectMeta{Name: "pod"},
@@ -144,9 +157,19 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 			expectedPrioritizeResult: schedulerapi.HostPriorityList{schedulerapi.HostPriority{Host: "node", Score: getNodeScore(1, time.Now().Format(time.UnixDate))}},
 		},
 		{
-			name:               "Test simple case of pod/node/volume with pending azDriverNode",
-			azVolumeAttachment: []runtime.Object{getVolumeAttachment("volumeAttachment", "vol", "node", "Ready")},
-			azDriverNode:       []runtime.Object{getDriverNode("driverNode", "0", "node", "Pending")},
+			name: "Test simple case of pod/node/volume with pending azDriverNode",
+			testClientSet: fakeClientSet.NewSimpleClientset(
+				&v1alpha1Client.AzVolumeAttachmentList{
+					Items: []v1alpha1Client.AzVolumeAttachment{
+						getVolumeAttachment("volumeAttachment", ns, "vol", "node", "Ready"),
+					},
+				},
+				&v1alpha1Client.AzDriverNodeList{
+					Items: []v1alpha1Client.AzDriverNode{
+						getDriverNode("driverNode", ns, "node", "Pending"),
+					},
+				},
+			),
 			schedulerArgs: schedulerapi.ExtenderArgs{
 				Pod: &v1.Pod{
 					ObjectMeta: meta.ObjectMeta{Name: "pod"},
@@ -162,15 +185,25 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 			expectedFilterResult: schedulerapi.ExtenderFilterResult{
 				Nodes:       &v1.NodeList{Items: nil},
 				NodeNames:   nil,
-				FailedNodes: map[string]string{"node": "AzDriverNodes for node is not ready."},
+				FailedNodes: map[string]string{"node": "AzDriverNode for node is not ready."},
 				Error:       "",
 			},
 			expectedPrioritizeResult: schedulerapi.HostPriorityList{schedulerapi.HostPriority{Host: "node", Score: getNodeScore(1, time.Now().Format(time.UnixDate))}},
 		},
 		{
-			name:               "Test simple case of single node/volume with no pod volume requests",
-			azVolumeAttachment: []runtime.Object{getVolumeAttachment("volumeAttachment", "vol", "node", "Ready")},
-			azDriverNode:       []runtime.Object{getDriverNode("driverNode", "0", "node", "Ready")},
+			name: "Test simple case of single node/volume with no pod volume requests",
+			testClientSet: fakeClientSet.NewSimpleClientset(
+				&v1alpha1Client.AzVolumeAttachmentList{
+					Items: []v1alpha1Client.AzVolumeAttachment{
+						getVolumeAttachment("volumeAttachment", ns, "vol", "node", "Ready"),
+					},
+				},
+				&v1alpha1Client.AzDriverNodeList{
+					Items: []v1alpha1Client.AzDriverNode{
+						getDriverNode("driverNode", ns, "node", "Ready"),
+					},
+				},
+			),
 			schedulerArgs: schedulerapi.ExtenderArgs{
 				Pod: &v1.Pod{
 					ObjectMeta: meta.ObjectMeta{Name: "pod"}},
@@ -178,19 +211,28 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 				NodeNames: &[]string{"node"},
 			},
 			expectedFilterResult: schedulerapi.ExtenderFilterResult{
-				Nodes:       &v1.NodeList{Items: []v1.Node{{ObjectMeta: meta.ObjectMeta{Name: "node"}}}},
-				NodeNames:   &[]string{"node"},
-				FailedNodes: make(map[string]string),
+				Nodes:       &v1.NodeList{},
+				NodeNames:   nil,
+				FailedNodes: nil,
 				Error:       "",
 			},
 			expectedPrioritizeResult: schedulerapi.HostPriorityList{schedulerapi.HostPriority{Host: "node", Score: getNodeScore(0, time.Now().Format(time.UnixDate))}},
 		},
 		{
-			name:               "Test case with 2 nodes and one pod/volume",
-			azVolumeAttachment: []runtime.Object{getVolumeAttachment("volumeAttachment", "vol", "node0", "Ready")},
-			azDriverNode: []runtime.Object{
-				getDriverNode("driverNode0", "0", "node0", "Ready"),
-				getDriverNode("driverNode1", "0", "node1", "Ready")},
+			name: "Test case with 2 nodes and one pod/volume",
+			testClientSet: fakeClientSet.NewSimpleClientset(
+				&v1alpha1Client.AzVolumeAttachmentList{
+					Items: []v1alpha1Client.AzVolumeAttachment{
+						getVolumeAttachment("volumeAttachment", ns, "vol", "node0", "Ready"),
+					},
+				},
+				&v1alpha1Client.AzDriverNodeList{
+					Items: []v1alpha1Client.AzDriverNode{
+						getDriverNode("driverNode0", ns, "node0", "Ready"),
+						getDriverNode("driverNode1", ns, "node1", "Ready"),
+					},
+				},
+			),
 			schedulerArgs: schedulerapi.ExtenderArgs{
 				Pod: &v1.Pod{
 					ObjectMeta: meta.ObjectMeta{Name: "pod"},
@@ -227,11 +269,20 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 			},
 		},
 		{
-			name:               "Test case with 1 ready and 1 pending nodes and one pod/volume",
-			azVolumeAttachment: []runtime.Object{getVolumeAttachment("volumeAttachment", "vol", "node1", "Ready")},
-			azDriverNode: []runtime.Object{
-				getDriverNode("driverNode0", "0", "node0", "Pending"),
-				getDriverNode("driverNode1", "0", "node1", "Ready")},
+			name: "Test case with 1 ready and 1 pending nodes and one pod/volume",
+			testClientSet: fakeClientSet.NewSimpleClientset(
+				&v1alpha1Client.AzVolumeAttachmentList{
+					Items: []v1alpha1Client.AzVolumeAttachment{
+						getVolumeAttachment("volumeAttachment", ns, "vol", "node1", "Ready"),
+					},
+				},
+				&v1alpha1Client.AzDriverNodeList{
+					Items: []v1alpha1Client.AzDriverNode{
+						getDriverNode("driverNode0", ns, "node0", "Pending"),
+						getDriverNode("driverNode1", ns, "node1", "Ready"),
+					},
+				},
+			),
 			schedulerArgs: schedulerapi.ExtenderArgs{
 				Pod: &v1.Pod{
 					ObjectMeta: meta.ObjectMeta{Name: "pod"},
@@ -258,7 +309,7 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 					},
 				},
 				NodeNames:   &[]string{"node1"},
-				FailedNodes: map[string]string{"node0": "AzDriverNodes for node0 is not ready."},
+				FailedNodes: map[string]string{"node0": "AzDriverNode for node0 is not ready."},
 				Error:       "",
 			},
 			expectedPrioritizeResult: schedulerapi.HostPriorityList{
@@ -268,12 +319,20 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 		},
 		{
 			name: "Test case with 2 nodes/volumes attached to one node",
-			azVolumeAttachment: []runtime.Object{
-				getVolumeAttachment("volumeAttachment0", "vol", "node0", "Ready"),
-				getVolumeAttachment("volumeAttachment1", "vol", "node0", "Ready")},
-			azDriverNode: []runtime.Object{
-				getDriverNode("driverNode0", "0", "node0", "Ready"),
-				getDriverNode("driverNode1", "0", "node1", "Ready")},
+			testClientSet: fakeClientSet.NewSimpleClientset(
+				&v1alpha1Client.AzVolumeAttachmentList{
+					Items: []v1alpha1Client.AzVolumeAttachment{
+						getVolumeAttachment("volumeAttachment0", ns, "vol", "node0", "Ready"),
+						getVolumeAttachment("volumeAttachment1", ns, "vol", "node0", "Ready"),
+					},
+				},
+				&v1alpha1Client.AzDriverNodeList{
+					Items: []v1alpha1Client.AzDriverNode{
+						getDriverNode("driverNode0", ns, "node0", "Ready"),
+						getDriverNode("driverNode1", ns, "node1", "Ready"),
+					},
+				},
+			),
 			schedulerArgs: schedulerapi.ExtenderArgs{
 				Pod: &v1.Pod{
 					ObjectMeta: meta.ObjectMeta{Name: "pod"},
@@ -311,17 +370,25 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 		},
 		{
 			name: "Test case with 3 nodes and 6 volumes attached to multiple nodes",
-			azVolumeAttachment: []runtime.Object{
-				getVolumeAttachment("volumeAttachment0", "vol", "node2", "Ready"),
-				getVolumeAttachment("volumeAttachment1", "vol", "node0", "Ready"),
-				getVolumeAttachment("volumeAttachment2", "vol", "node1", "Ready"),
-				getVolumeAttachment("volumeAttachment3", "vol", "node1", "Ready"),
-				getVolumeAttachment("volumeAttachment4", "vol", "node1", "Ready"),
-				getVolumeAttachment("volumeAttachment5", "vol", "node0", "Ready")},
-			azDriverNode: []runtime.Object{
-				getDriverNode("driverNode0", "0", "node0", "Ready"),
-				getDriverNode("driverNode1", "0", "node1", "Ready"),
-				getDriverNode("driverNode2", "0", "node2", "Ready")},
+			testClientSet: fakeClientSet.NewSimpleClientset(
+				&v1alpha1Client.AzVolumeAttachmentList{
+					Items: []v1alpha1Client.AzVolumeAttachment{
+						getVolumeAttachment("volumeAttachment0", ns, "vol", "node2", "Ready"),
+						getVolumeAttachment("volumeAttachment1", ns, "vol", "node0", "Ready"),
+						getVolumeAttachment("volumeAttachment2", ns, "vol", "node1", "Ready"),
+						getVolumeAttachment("volumeAttachment3", ns, "vol", "node1", "Ready"),
+						getVolumeAttachment("volumeAttachment4", ns, "vol", "node1", "Ready"),
+						getVolumeAttachment("volumeAttachment5", ns, "vol", "node0", "Ready"),
+					},
+				},
+				&v1alpha1Client.AzDriverNodeList{
+					Items: []v1alpha1Client.AzDriverNode{
+						getDriverNode("driverNode0", ns, "node0", "Ready"),
+						getDriverNode("driverNode1", ns, "node1", "Ready"),
+						getDriverNode("driverNode2", ns, "node2", "Ready"),
+					},
+				},
+			),
 			schedulerArgs: schedulerapi.ExtenderArgs{
 				Pod: &v1.Pod{
 					ObjectMeta: meta.ObjectMeta{Name: "pod"},
@@ -355,17 +422,25 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 		},
 		{
 			name: "Test case with 3 nodes, extra volumes and pod with 2 volume requests",
-			azVolumeAttachment: []runtime.Object{
-				getVolumeAttachment("volumeAttachment0", "vol2", "node2", "Ready"),
-				getVolumeAttachment("volumeAttachment1", "vol", "node0", "Ready"),
-				getVolumeAttachment("volumeAttachment2", "vol1", "node1", "Ready"),
-				getVolumeAttachment("volumeAttachment3", "vol", "node1", "Ready"),
-				getVolumeAttachment("volumeAttachment4", "vol", "node1", "Ready"),
-				getVolumeAttachment("volumeAttachment5", "vol", "node0", "Ready")},
-			azDriverNode: []runtime.Object{
-				getDriverNode("driverNode0", "0", "node0", "Ready"),
-				getDriverNode("driverNode1", "0", "node1", "Ready"),
-				getDriverNode("driverNode2", "0", "node2", "Ready")},
+			testClientSet: fakeClientSet.NewSimpleClientset(
+				&v1alpha1Client.AzVolumeAttachmentList{
+					Items: []v1alpha1Client.AzVolumeAttachment{
+						getVolumeAttachment("volumeAttachment0", ns, "vol2", "node2", "Ready"),
+						getVolumeAttachment("volumeAttachment1", ns, "vol", "node0", "Ready"),
+						getVolumeAttachment("volumeAttachment2", ns, "vol1", "node1", "Ready"),
+						getVolumeAttachment("volumeAttachment3", ns, "vol", "node1", "Ready"),
+						getVolumeAttachment("volumeAttachment4", ns, "vol", "node1", "Ready"),
+						getVolumeAttachment("volumeAttachment5", ns, "vol", "node0", "Ready"),
+					},
+				},
+				&v1alpha1Client.AzDriverNodeList{
+					Items: []v1alpha1Client.AzDriverNode{
+						getDriverNode("driverNode0", ns, "node0", "Ready"),
+						getDriverNode("driverNode1", ns, "node1", "Ready"),
+						getDriverNode("driverNode2", ns, "node2", "Ready"),
+					},
+				},
+			),
 			schedulerArgs: schedulerapi.ExtenderArgs{
 				Pod: &v1.Pod{
 					ObjectMeta: meta.ObjectMeta{Name: "pod"},
@@ -402,17 +477,25 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 		},
 		{
 			name: "Test case with 3 nodes and extra volumes attached to multiple nodes",
-			azVolumeAttachment: []runtime.Object{
-				getVolumeAttachment("volumeAttachment0", "vol2", "node2", "Ready"),
-				getVolumeAttachment("volumeAttachment1", "vol", "node0", "Ready"),
-				getVolumeAttachment("volumeAttachment2", "vol1", "node1", "Ready"),
-				getVolumeAttachment("volumeAttachment3", "vol", "node1", "Ready"),
-				getVolumeAttachment("volumeAttachment4", "vol", "node1", "Ready"),
-				getVolumeAttachment("volumeAttachment5", "vol", "node0", "Ready")},
-			azDriverNode: []runtime.Object{
-				getDriverNode("driverNode0", "0", "node0", "Ready"),
-				getDriverNode("driverNode1", "0", "node1", "Ready"),
-				getDriverNode("driverNode2", "0", "node2", "Ready")},
+			testClientSet: fakeClientSet.NewSimpleClientset(
+				&v1alpha1Client.AzVolumeAttachmentList{
+					Items: []v1alpha1Client.AzVolumeAttachment{
+						getVolumeAttachment("volumeAttachment0", ns, "vol2", "node2", "Ready"),
+						getVolumeAttachment("volumeAttachment1", ns, "vol", "node0", "Ready"),
+						getVolumeAttachment("volumeAttachment2", ns, "vol1", "node1", "Ready"),
+						getVolumeAttachment("volumeAttachment3", ns, "vol", "node1", "Ready"),
+						getVolumeAttachment("volumeAttachment4", ns, "vol", "node1", "Ready"),
+						getVolumeAttachment("volumeAttachment5", ns, "vol", "node0", "Ready"),
+					},
+				},
+				&v1alpha1Client.AzDriverNodeList{
+					Items: []v1alpha1Client.AzDriverNode{
+						getDriverNode("driverNode0", ns, "node0", "Ready"),
+						getDriverNode("driverNode1", ns, "node1", "Ready"),
+						getDriverNode("driverNode2", ns, "node2", "Ready"),
+					},
+				},
+			),
 			schedulerArgs: schedulerapi.ExtenderArgs{
 				Pod: &v1.Pod{
 					ObjectMeta: meta.ObjectMeta{Name: "pod"},
@@ -457,10 +540,8 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 			}()
 
 			// continue with fake clients
-			fakeVolumeClient := fakeClientSet.NewSimpleClientset(test.azVolumeAttachment...)
-			fakeNodeDriverClient := fakeClientSet.NewSimpleClientset(test.azDriverNode...)
-			azVolumeAttachmentExtensionClient = &fakeClientSetInterface.FakeAzVolumeAttachments{Fake: &fakeClientSetInterface.FakeDiskV1alpha1{&fakeVolumeClient.Fake}}
-			azDriverNodeExtensionClient = &fakeClientSetInterface.FakeAzDriverNodes{Fake: &fakeClientSetInterface.FakeDiskV1alpha1{&fakeNodeDriverClient.Fake}}
+			azVolumeAttachmentExtensionClient = test.testClientSet.DiskV1alpha1().AzVolumeAttachments(ns)
+			azDriverNodeExtensionClient = test.testClientSet.DiskV1alpha1().AzDriverNodes(ns)
 
 			// encode scheduler arguments
 			requestArgs, err := json.Marshal(&test.schedulerArgs)
@@ -469,7 +550,7 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 			}
 
 			// check filter result
-			filterRequest, err := http.NewRequest("GET", filterRequestStr, bytes.NewReader(requestArgs))
+			filterRequest, err := http.NewRequest("POST", filterRequestStr, bytes.NewReader(requestArgs))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -488,7 +569,7 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 			}
 
 			// check prioritize result
-			prioritizeRequest, err := http.NewRequest("GET", prioritizeRequestStr, bytes.NewReader(requestArgs))
+			prioritizeRequest, err := http.NewRequest("POST", prioritizeRequestStr, bytes.NewReader(requestArgs))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -503,13 +584,120 @@ func TestFilterAndPrioritizeResponses(t *testing.T) {
 			}
 
 			if !gotExpectedPrioritizeList(actualPrioritizeList, test.expectedPrioritizeResult) {
-				t.Errorf("Actual prioritize response (%s) does not equal expected response.", prioritizeResultRecorder.Body /*, args, expectedFilterResponse*/)
+				t.Errorf("Actual prioritize response (%s) does not equal expected response.", prioritizeResultRecorder.Body)
 			}
 		})
 	}
 }
 
-//TODO add testcase with randomized input
+//TODO test only checks the repsonse code. add check for response body
+func TestFilterAndPrioritizeInRandomizedLargeCluster(t *testing.T) {
+	var clusterNodes []v1alpha1Client.AzDriverNode
+	var clusterVolumes []v1alpha1Client.AzVolumeAttachment
+	var nodes []v1.Node
+	var nodeNames []string
+	var tokens = make(chan struct{}, 20)
+
+	numberOfClusterNodes := 5000
+	numberOfClusterVolumes := 30000
+	numberOfPodsToSchedule := 100000
+
+	//save original clients
+	savedAzVolumeAttachmentExtensionClient := azVolumeAttachmentExtensionClient
+	savedAzDriverNodeExtensionClient := azDriverNodeExtensionClient
+	defer func() {
+		azVolumeAttachmentExtensionClient = savedAzVolumeAttachmentExtensionClient
+		azDriverNodeExtensionClient = savedAzDriverNodeExtensionClient
+	}()
+
+	// generate large number of nodes
+	for i := 0; i < numberOfClusterNodes; i++ {
+		nodeName := fmt.Sprintf("node%d", i)
+		clusterNodes = append(clusterNodes, getDriverNode(fmt.Sprintf("driverNode%d", i), ns, nodeName, "Ready"))
+		nodes = append(nodes, v1.Node{ObjectMeta: meta.ObjectMeta{Name: nodeName}})
+		nodeNames = append(nodeNames, nodeName)
+	}
+
+	// generate volumes and assign to nodes
+	for i := 0; i < numberOfClusterVolumes; i++ {
+		clusterVolumes = append(clusterVolumes, getVolumeAttachment(fmt.Sprintf("volumeAttachment%d", i), ns, fmt.Sprintf("vol%d", i), fmt.Sprintf("node%d", rand.Intn(5000)), "Ready"))
+	}
+
+	testClientSet := fakeClientSet.NewSimpleClientset(
+		&v1alpha1Client.AzVolumeAttachmentList{
+			Items: clusterVolumes,
+		},
+		&v1alpha1Client.AzDriverNodeList{
+			Items: clusterNodes,
+		})
+
+	// continue with fake clients
+	azVolumeAttachmentExtensionClient = testClientSet.DiskV1alpha1().AzVolumeAttachments(ns)
+	azDriverNodeExtensionClient = testClientSet.DiskV1alpha1().AzDriverNodes(ns)
+
+	for j := 0; j < numberOfPodsToSchedule; j++ {
+		go func() {
+			var testPodVolumes []v1.Volume
+			// randomly assign volumes to pod
+			podVolCount := rand.Intn(numberOfClusterVolumes)
+			for i := 0; i < podVolCount; i++ {
+				testPodVolumes = append(testPodVolumes, v1.Volume{Name: fmt.Sprintf("vol%d", rand.Intn(numberOfClusterVolumes))})
+			}
+
+			testPod := &v1.Pod{
+				ObjectMeta: meta.ObjectMeta{Name: "pod"},
+				Spec: v1.PodSpec{
+					Volumes: testPodVolumes}}
+
+			schedulerArgs := schedulerapi.ExtenderArgs{
+				Pod:       testPod,
+				Nodes:     &v1.NodeList{Items: nodes},
+				NodeNames: &nodeNames,
+			}
+
+			responseFilter := httptest.NewRecorder()
+			responsePrioritize := httptest.NewRecorder()
+			requestArgs, err := json.Marshal(schedulerArgs)
+			if err != nil {
+				t.Fatal("Json encoding failed")
+			}
+
+			tokens <- struct{}{} // acquire a token
+			filterRequest, err := http.NewRequest("POST", filterRequestStr, bytes.NewReader(requestArgs))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			handlerFilter.ServeHTTP(responseFilter, filterRequest)
+			if responseFilter.Code != 200 {
+				t.Errorf("Filter request failed for %s. Got %d want %d", requestArgs, responseFilter.Code, 200)
+			}
+
+			prioritizeRequest, err := http.NewRequest("POST", prioritizeRequestStr, bytes.NewReader(requestArgs))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			handlerPrioritize.ServeHTTP(responsePrioritize, prioritizeRequest)
+			if responsePrioritize.Code != 200 {
+				t.Errorf("Filter request failed for %s. Got %d want %d", requestArgs, responsePrioritize.Code, 200)
+			}
+
+			decoder := json.NewDecoder(responseFilter.Body)
+			var filterResult schedulerapi.ExtenderFilterResult
+			if err := decoder.Decode(&filterResult); err != nil {
+				klog.Errorf("handleFilterRequest: Error decoding filter request: %v", err)
+			}
+
+			decoder = json.NewDecoder(responsePrioritize.Body)
+			var prioritizeList schedulerapi.HostPriorityList
+			if err := decoder.Decode(&prioritizeList); err != nil {
+				klog.Errorf("handlePrioritizeRequest: Error decoding filter request: %v", err)
+			}
+			<-tokens //release the token
+		}()
+	}
+}
 
 func gotExpectedFilterResults(got, want schedulerapi.ExtenderFilterResult) bool {
 	return reflect.DeepEqual(got, want)
@@ -527,13 +715,17 @@ func gotExpectedPrioritizeList(got, want schedulerapi.HostPriorityList) bool {
 	return true
 }
 
-func getVolumeAttachment(attachmentName, volumeName, nodeName, state string) *v1alpha1Client.AzVolumeAttachment {
-	return &v1alpha1Client.AzVolumeAttachment{
+func getVolumeAttachment(attachmentName, ns, volumeName, nodeName, state string) v1alpha1Client.AzVolumeAttachment {
+	return v1alpha1Client.AzVolumeAttachment{
+		TypeMeta: meta.TypeMeta{
+			Kind: "azvolumeattachment",
+		},
 		ObjectMeta: meta.ObjectMeta{
-			Name: attachmentName,
+			Name:      attachmentName,
+			Namespace: ns,
 		},
 		Spec: v1alpha1Client.AzVolumeAttachmentSpec{
-			AzVolumeName:     volumeName,
+			UnderlyingVolume: volumeName,
 			AzDriverNodeName: nodeName,
 			Partition:        1,
 		},
@@ -543,13 +735,16 @@ func getVolumeAttachment(attachmentName, volumeName, nodeName, state string) *v1
 	}
 }
 
-func getDriverNode(driverNodeName, csiNodeID, nodeName, state string) *v1alpha1Client.AzDriverNode {
-	return &v1alpha1Client.AzDriverNode{
+func getDriverNode(driverNodeName, ns, nodeName, state string) v1alpha1Client.AzDriverNode {
+	return v1alpha1Client.AzDriverNode{
+		TypeMeta: meta.TypeMeta{
+			Kind: "azdrivernode",
+		},
 		ObjectMeta: meta.ObjectMeta{
-			Name: driverNodeName,
+			Name:      driverNodeName,
+			Namespace: ns,
 		},
 		Spec: v1alpha1Client.AzDriverNodeSpec{
-			CSINodeID: csiNodeID,
 			NodeName:  nodeName,
 			Partition: 1,
 			Heartbeat: time.Now().Format(time.UnixDate),
@@ -559,4 +754,22 @@ func getDriverNode(driverNodeName, csiNodeID, nodeName, state string) *v1alpha1C
 		},
 	}
 
+}
+
+func getPod(podName, ns, containerName, containerImage string) *v1.Pod {
+	return &v1.Pod{
+		ObjectMeta: meta.ObjectMeta{
+			Name:      podName,
+			Namespace: ns,
+		},
+		Spec: v1.PodSpec{
+			SchedulerName: "azdiskschedulerextender",
+			Containers: []v1.Container{
+				v1.Container{
+					Name:  containerName,
+					Image: containerImage,
+				},
+			},
+		},
+	}
 }

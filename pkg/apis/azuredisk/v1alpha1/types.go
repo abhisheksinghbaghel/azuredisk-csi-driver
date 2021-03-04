@@ -68,9 +68,9 @@ type AzVolumeAttachment struct {
 
 // AzVolumeAttachmentSpec is the spec for a AzVolumeAttachment resource
 type AzVolumeAttachmentSpec struct {
-	AzVolumeName     string `json:"underlyingVolume"`
-	AzDriverNodeName string `json:"nodeWithVolumeAttachment"`
-	Partition        int32  `json:"partitionNumber"`
+	UnderlyingVolume string `json:"underlyingVolume"`
+	AzDriverNodeName string `json:"azDriverNodeName"`
+	Partition        int32  `json:"partition"`
 }
 
 // AzVolumeAttachmentStatus is the status for a AzVolumeAttachment resource
@@ -103,10 +103,9 @@ type AzDriverNode struct {
 
 // AzDriverNodeSpec is the spec for a AzDriverNode resource
 type AzDriverNodeSpec struct {
-	CSINodeID string `json:"underlyingCSINode"`
-	NodeName  string `json:"underlyingNode"`
-	Partition int32  `json:"partitionNumber"`
-	Heartbeat string `json:"latestHeartbeatTime"`
+	NodeName  string `json:"nodeName"`
+	Partition int32  `json:"partition"`
+	Heartbeat string `json:"heartbeat"`
 }
 
 // AzDriverNodeStatus is the status for a AzDriverNode resource

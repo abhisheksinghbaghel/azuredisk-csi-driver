@@ -93,12 +93,6 @@ func handlePingRequest(response http.ResponseWriter, request *http.Request) {
 func handleFilterRequest(response http.ResponseWriter, request *http.Request) {
 	var args schedulerapi.ExtenderArgs
 
-	if request.Body == nil {
-		klog.Errorf("handleFilterRequest: Error request body is empty.")
-		http.Error(response, "Error request body is empty", http.StatusBadRequest)
-		return
-	}
-
 	decoder := json.NewDecoder(request.Body)
 	encoder := json.NewEncoder(response)
 
@@ -117,24 +111,20 @@ func handleFilterRequest(response http.ResponseWriter, request *http.Request) {
 
 	responseBody, err := filter(request.Context(), args)
 	if err != nil {
+		klog.Errorf("handleFilterRequest: Failed to filter: %v", err)
 		http.Error(response, "Service Unavailable", http.StatusServiceUnavailable)
 		return
 	}
 
 	if err := encoder.Encode(responseBody); err != nil {
 		klog.Errorf("handleFilterRequest: Error encoding filter response: %+v : %v", responseBody, err)
+		http.Error(response, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 }
 
 func handlePrioritizeRequest(response http.ResponseWriter, request *http.Request) {
 	var args schedulerapi.ExtenderArgs
-
-	if request.Body == nil {
-		klog.Errorf("handlePrioritizeRequest: Error request body is empty.")
-		http.Error(response, "Error request body is empty", http.StatusBadRequest)
-		return
-	}
 
 	decoder := json.NewDecoder(request.Body)
 	encoder := json.NewEncoder(response)
@@ -146,12 +136,14 @@ func handlePrioritizeRequest(response http.ResponseWriter, request *http.Request
 
 	responseBody, err := prioritize(request.Context(), args)
 	if err != nil {
+		klog.Errorf("handlePrioritizeRequest: Failed to prioritize: %v", err)
 		http.Error(response, "Service Unavailable", http.StatusServiceUnavailable)
 		return
 	}
 
 	if err := encoder.Encode(responseBody); err != nil {
 		klog.Errorf("handlePrioritizeRequest: Failed to encode response: %v", err)
+		http.Error(response, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 }

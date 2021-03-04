@@ -25,6 +25,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
@@ -37,6 +38,8 @@ import (
 var (
 	azVolumeAttachmentExtensionClient clientSet.AzVolumeAttachmentInterface
 	azDriverNodeExtensionClient       clientSet.AzDriverNodeInterface
+	kubeExtensionClientset            *clientSet.DiskV1alpha1Client
+	ns                                = "default" //TODO update to correct namespace when finalized
 )
 
 type azDriverNodesMeta struct {
@@ -50,14 +53,14 @@ type azVolumeAttachmentsMeta struct {
 }
 
 func init() {
-
 	var err error
-	azVolumeAttachmentExtensionClient, azDriverNodeExtensionClient, err = getKubernetesClient()
-
+	kubeExtensionClientset, err = getKubernetesExtensionClientsets()
 	if err != nil {
-		klog.Fatalf("Failed to create kubernetes clinetset %s ...", err)
+		klog.Fatalf("Failed to create kubernetes clientset %s ...", err)
 		os.Exit(1)
 	}
+
+	azVolumeAttachmentExtensionClient, azDriverNodeExtensionClient = kubeExtensionClientset.AzVolumeAttachments(ns), kubeExtensionClientset.AzDriverNodes(ns)
 }
 
 func filter(context context.Context, schedulerExtenderArgs schedulerapi.ExtenderArgs) (*schedulerapi.ExtenderFilterResult, error) {
@@ -67,35 +70,40 @@ func filter(context context.Context, schedulerExtenderArgs schedulerapi.Extender
 		failedNodes       map[string]string
 	)
 
-	nodesChan := make(chan azDriverNodesMeta)
-	// all available cluster nodes
-	allNodes := schedulerExtenderArgs.Nodes.Items
+	requestedVolumes := schedulerExtenderArgs.Pod.Spec.Volumes
 
-	go getAzDriverNodes(context, nodesChan)
-	azDriverNodesMeta := <-nodesChan
-	if azDriverNodesMeta.err != nil {
-		return nil, fmt.Errorf("Failed to get the list of azDriverNodes: %v", azDriverNodesMeta.err)
-	}
+	//TODO add RWM volume case here
+	// if no volumes are requested, return assigning 0 score to all nodes
+	if len(requestedVolumes) != 0 {
+		nodesChan := make(chan azDriverNodesMeta)
+		// all available cluster nodes
+		allNodes := schedulerExtenderArgs.Nodes.Items
 
-	// map node name to azDriverNode state
-	nodeNameToStatusMap := make(map[string]string)
-	for _, azDriverNode := range azDriverNodesMeta.nodes.Items {
-		nodeNameToStatusMap[azDriverNode.Spec.NodeName] = azDriverNode.Status.State
-	}
-
-	// Filter the nodes based on AzDiverNode status
-	failedNodes = make(map[string]string)
-	for _, node := range allNodes {
-		state, ok := nodeNameToStatusMap[node.Name]
-		if ok && state == "Ready" {
-			filteredNodes = append(filteredNodes, node)
-			filteredNodeNames = append(filteredNodeNames, node.Name)
-		} else {
-			failedNodes[node.Name] = fmt.Sprintf("AzDriverNodes for %s is not ready.", node.Name)
+		go getAzDriverNodes(context, nodesChan)
+		azDriverNodesMeta := <-nodesChan
+		if azDriverNodesMeta.err != nil {
+			return nil, fmt.Errorf("Failed to get the list of azDriverNodes: %v", azDriverNodesMeta.err)
 		}
-		klog.V(2).Infof("handleFilterRequest: %v %+v", node.Name, node.Status.Addresses)
-	}
 
+		// map node name to azDriverNode state
+		nodeNameToStatusMap := make(map[string]string)
+		for _, azDriverNode := range azDriverNodesMeta.nodes.Items {
+			nodeNameToStatusMap[azDriverNode.Spec.NodeName] = azDriverNode.Status.State
+		}
+
+		// Filter the nodes based on AzDiverNode status
+		failedNodes = make(map[string]string)
+		for _, node := range allNodes {
+			state, ok := nodeNameToStatusMap[node.Name]
+			if ok && state == "Ready" {
+				filteredNodes = append(filteredNodes, node)
+				filteredNodeNames = append(filteredNodeNames, node.Name)
+			} else {
+				failedNodes[node.Name] = fmt.Sprintf("AzDriverNode for %s is not ready.", node.Name)
+			}
+			klog.V(2).Infof("handleFilterRequest: %v %+v", node.Name, node.Status.Addresses)
+		}
+	}
 	return formatFilterResult(filteredNodes, filteredNodeNames, failedNodes, ""), nil
 }
 
@@ -143,7 +151,7 @@ func prioritize(context context.Context, schedulerExtenderArgs schedulerapi.Exte
 
 		// for every volume the pod needs, append its azVolumeAttachment name to the node name
 		for _, attachedVolume := range azVolumeAttachmentsMeta.volumes.Items {
-			_, needs := volumesPodNeeds[attachedVolume.Spec.AzVolumeName]
+			_, needs := volumesPodNeeds[attachedVolume.Spec.UnderlyingVolume]
 			if needs {
 				nodeNameToVolumeMap[attachedVolume.Spec.AzDriverNodeName] = append(nodeNameToVolumeMap[attachedVolume.Spec.AzDriverNodeName], attachedVolume.Name)
 			}
@@ -161,9 +169,8 @@ func prioritize(context context.Context, schedulerExtenderArgs schedulerapi.Exte
 	return
 }
 
-func getKubernetesClient() (clientSet.AzVolumeAttachmentInterface, clientSet.AzDriverNodeInterface, error) {
-
-	config, err := rest.InClusterConfig()
+func getKubeConfig() (config *rest.Config, err error) {
+	config, err = rest.InClusterConfig()
 	if err != nil {
 		// fallback to kubeconfig
 		kubeConfigPath := os.Getenv("KUBECONFIG")
@@ -173,21 +180,36 @@ func getKubernetesClient() (clientSet.AzVolumeAttachmentInterface, clientSet.AzD
 
 		// create the config from the path
 		config, err = clientcmd.BuildConfigFromFlags("", kubeConfigPath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("Cannot load kubeconfig: %v", err)
-		}
 	}
+	return
+}
+
+func getKubernetesExtensionClientsets() (azKubeExtensionClientset *clientSet.DiskV1alpha1Client, err error) {
+
+	// getKubeConfig gets config object from config file
+	config, err := getKubeConfig()
 
 	// generate the clientset extension based off of the config
-	azKubeExtensionClient, err := clientSet.NewForConfig(config)
+	azKubeExtensionClientset, err = clientSet.NewForConfig(config)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Cannot create clientset: %v", err)
+		return azKubeExtensionClientset, fmt.Errorf("Cannot create clientset: %v", err)
 	}
-	azVolumeAttachmentExtensionClient := azKubeExtensionClient.AzVolumeAttachments("")
-	azDriverNodeExtensionClient := azKubeExtensionClient.AzDriverNodes("")
 
 	klog.Info("Successfully constructed kubernetes client and extension clientset")
-	return azVolumeAttachmentExtensionClient, azDriverNodeExtensionClient, nil
+	return azKubeExtensionClientset, nil
+}
+
+func getKubernetesClientset() (*kubernetes.Clientset, error) {
+
+	// getKubeConfig gets config object from config file
+	config, err := getKubeConfig()
+
+	// generate the clientset extension based off of the config
+	kubeClient, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("Cannot create kubernetes client: %v", err)
+	}
+	return kubeClient, nil
 }
 
 func getNodeScore(volumeAttachments int, heartbeat string) int64 {
