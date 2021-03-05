@@ -187,11 +187,14 @@ func getKubernetesExtensionClientsets() (azKubeExtensionClientset *clientSet.Dis
 
 	// getKubeConfig gets config object from config file
 	config, err := getKubeConfig()
+	if err != nil {
+		return nil, fmt.Errorf("Failed to get the kubernetes config: %v", err)
+	}
 
 	// generate the clientset extension based off of the config
 	azKubeExtensionClientset, err = clientSet.NewForConfig(config)
 	if err != nil {
-		return azKubeExtensionClientset, fmt.Errorf("Cannot create clientset: %v", err)
+		return azKubeExtensionClientset, fmt.Errorf("Cannot create the clientset: %v", err)
 	}
 
 	klog.Info("Successfully constructed kubernetes client and extension clientset")
@@ -203,11 +206,14 @@ func getKubernetesExtensionClientsets() (azKubeExtensionClientset *clientSet.Dis
 
 // 	// getKubeConfig gets config object from config file
 // 	config, err := getKubeConfig()
+// 	if err != nil {
+// 		return nil, fmt.Errorf("Failed to get the kubernetes config: %v", err)
+// 	}
 
 // 	// generate the clientset extension based off of the config
 // 	kubeClient, err := kubernetes.NewForConfig(config)
 // 	if err != nil {
-// 		return nil, fmt.Errorf("Cannot create kubernetes client: %v", err)
+// 		return nil, fmt.Errorf("Cannot create the kubernetes client: %v", err)
 // 	}
 // 	return kubeClient, nil
 // }
