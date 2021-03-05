@@ -171,6 +171,7 @@ func prioritize(context context.Context, schedulerExtenderArgs schedulerapi.Exte
 func getKubeConfig() (config *rest.Config, err error) {
 	config, err = rest.InClusterConfig()
 	if err != nil {
+		klog.Warning("Failed getting the in cluster config: %v", err)
 		// fallback to kubeconfig
 		kubeConfigPath := os.Getenv("KUBECONFIG")
 		if len(kubeConfigPath) == 0 {
