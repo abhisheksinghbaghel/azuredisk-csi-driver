@@ -719,10 +719,17 @@ func TestFilterAndPrioritizeInRandomizedLargeCluster(t *testing.T) {
 		close(tokens)
 	}()
 
-	err := <-errorChan
-	if err != nil {
-		klog.Errorf("Error during stress test: %v ", err)
-		t.Fatal(err)
+	j := 0
+	for err := range errorChan {
+		if err != nil {
+			klog.Errorf("Error during stress test: %v ", err)
+			t.Fatal(err)
+		}
+		j++
+		if j > numberOfPodsToSchedule { // TODO remove. Helps with debugging otherwise unnecessary
+			klog.Info("Test ran successfully.")
+			break
+		}
 	}
 }
 
