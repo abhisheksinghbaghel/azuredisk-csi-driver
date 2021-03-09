@@ -22,7 +22,9 @@ import (
 	"context"
 	"flag"
 	"os"
+	"os/signal"
 	"reflect"
+	"syscall"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
@@ -33,12 +35,15 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	klogv1 "k8s.io/klog"
 	"k8s.io/klog/klogr"
 	"k8s.io/klog/v2"
 
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	azuredisk "sigs.k8s.io/azuredisk-csi-driver/pkg/apis/azuredisk/v1alpha1"
 	azDiskClientSet "sigs.k8s.io/azuredisk-csi-driver/pkg/apis/client/clientset/versioned"
 	"sigs.k8s.io/azuredisk-csi-driver/pkg/controller"
@@ -57,6 +62,7 @@ var controllerLeaseDurationInSec = flag.Int("lease-duration-in-sec", 30, "Freque
 var controllerLeaseRenewDeadlineInSec = flag.Int("lease-renew-deadline-in-sec", 24, "Frequency in seconds at which node driver sends heartbeat.")
 var controllerLeaseRetryPeriodInSec = flag.Int("lease-retry-period-in-sec", 30, "Frequency in seconds at which node driver sends heartbeat.")
 var partitionLabel = "azdrivernodes.disk.csi.azure.com/partition"
+var scheme = runtime.NewScheme()
 
 // OutputCallDepth is the stack depth where we can find the origin of this call
 const OutputCallDepth = 6
@@ -181,6 +187,14 @@ func (d *DriverV2) Run(endpoint, kubeConfigPath string, testBool bool) {
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
+	c := make(chan os.Signal, 2)
+	signal.Notify(c, []os.Signal{os.Interrupt, syscall.SIGTERM}...)
+	go func() {
+		<-c
+		cancel()
+		<-c
+		os.Exit(1)
+	}()
 
 	// Start the controllers if this is a controller plug-in
 	if *isControllerPlugin {
@@ -254,21 +268,25 @@ func (d *DriverV2) StartControllersAndDieOnExit(ctx context.Context) {
 	klogv1.SetOutputBySeverity("FATAL", klogWriter{})
 	log := klogr.New().WithName("AzDiskControllerManager").WithValues("namepace", d.objectNamespace).WithValues("partition", d.controllerPartition)
 
-	leaseDuration := time.Duration(d.controllerLeaseDurationInSec) * time.Second
-	renewDeadline := time.Duration(d.controllerLeaseRenewDeadlineInSec) * time.Second
-	retryPeriod := time.Duration(d.controllerLeaseRetryPeriodInSec) * time.Second
+	// leaseDuration := time.Duration(d.controllerLeaseDurationInSec) * time.Second
+	// renewDeadline := time.Duration(d.controllerLeaseRenewDeadlineInSec) * time.Second
+	// retryPeriod := time.Duration(d.controllerLeaseRetryPeriodInSec) * time.Second
+
+	clientgoscheme.AddToScheme(scheme)
+	azuredisk.AddToScheme(scheme)
 
 	// Setup a Manager
 	klog.V(2).Info("Setting up controller manager")
 	mgr, err := manager.New(d.kubeConfig, manager.Options{
-		Logger:                        log,
-		LeaderElection:                true,
-		LeaderElectionResourceLock:    "leases",
-		LeaderElectionNamespace:       d.objectNamespace,
-		LeaderElectionID:              d.controllerPartition,
-		LeaseDuration:                 &leaseDuration,
-		RenewDeadline:                 &renewDeadline,
-		RetryPeriod:                   &retryPeriod,
+		Scheme:                     scheme,
+		Logger:                     log,
+		LeaderElection:             true,
+		LeaderElectionResourceLock: resourcelock.LeasesResourceLock,
+		LeaderElectionNamespace:    d.objectNamespace,
+		LeaderElectionID:           d.controllerPartition,
+		// LeaseDuration:                 &leaseDuration,
+		// RenewDeadline:                 &renewDeadline,
+		// RetryPeriod:                   &retryPeriod,
 		LeaderElectionReleaseOnCancel: true,
 		Namespace:                     d.objectNamespace})
 	if err != nil {
@@ -278,16 +296,22 @@ func (d *DriverV2) StartControllersAndDieOnExit(ctx context.Context) {
 
 	// Setup a new controller to clean-up AzDriverNodes
 	// objects for the nodes which get deleted
-	klog.V(2).Info("Initializing AzDriverNode controller")
-	err = controller.InitializeAzDriverNodeController(mgr, &d.azDiskClient, d.objectNamespace)
+	// klog.V(2).Info("Initializing AzDriverNode controller")
+	// // err = controller.InitializeAzDriverNodeController(mgr, &d.azDiskClient, d.objectNamespace)
+	// // if err != nil {
+	// // 	klog.Errorf("Failed to initialize AzDriverNodeController. Error (%v). Exiting application...", err)
+	// // 	os.Exit(1)
+	// // }
+	klog.V(2).Info("Initializing AzVolumeAttachment controller")
+	err = controller.NewAzVolumeAttachmentController(ctx, mgr, &d.azDiskClient, d.objectNamespace)
 	if err != nil {
-		klog.Errorf("Failed to initialize AzDriverNodeController. Error (%v). Exiting application...", err)
+		klog.Errorf("Failed to initialize AzVolumeAttachment. Error (%v). Exiting application...", err)
 		os.Exit(1)
 	}
 
 	klog.V(2).Info("Starting controller manager")
 	if err := mgr.Start(ctx); err != nil {
-		klog.Errorf("Controller manager exited.")
+		klog.Errorf("Controller manager exited: (%v)", err)
 		os.Exit(1)
 	}
 	// If manager exits, exit the application

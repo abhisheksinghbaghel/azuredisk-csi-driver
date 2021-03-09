@@ -129,7 +129,7 @@ ifdef TEST_WINDOWS
 		--set node.logLevel=6 \
 		--set cloud=$(CLOUD)
 else
-	helm install azuredisk-csi-driver charts/${CHART_VERSION}/azuredisk-csi-driver --namespace kube-system --wait --timeout=15m -v=5 --debug \
+	helm upgrade --install azuredisk-csi-driver charts/${CHART_VERSION}/azuredisk-csi-driver --namespace kube-system --wait --timeout=15m -v=5 --debug \
 		${E2E_HELM_OPTIONS} \
 		--set snapshot.enabled=true \
 		--set cloud=$(CLOUD)
@@ -177,7 +177,7 @@ azdiskschedulerextender-darwin:
 
 .PHONY: container
 container: azuredisk
-	docker build --no-cache -t $(IMAGE_TAG) -f ./pkg/azurediskplugin/dev.Dockerfile .
+	docker build --no-cache -t $(IMAGE_TAG) --build-arg PLUGIN_NAME=${PLUGIN_NAME} -f ./pkg/azurediskplugin/dev.Dockerfile .
 
 .PHONY: container-linux
 container-linux:

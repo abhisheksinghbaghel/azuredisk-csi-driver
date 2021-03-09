@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
+	"sigs.k8s.io/azuredisk-csi-driver/pkg/apis/azuredisk/v1alpha1"
 	azVolumeClientSet "sigs.k8s.io/azuredisk-csi-driver/pkg/apis/client/clientset/versioned"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -74,12 +75,37 @@ func (r *reconcileAzDriverNode) Reconcile(ctx context.Context, request reconcile
 			return reconcile.Result{Requeue: true}, nil
 		}
 
+		// Mark all volumeAttachments attached to this node DetachRequired, if failed, requeue
+		if err = r.MarkDetachRequired(ctx, request.Name); err != nil {
+			return reconcile.Result{Requeue: true}, nil
+		}
 		return reconcile.Result{}, nil
 	}
 
 	klog.Errorf("Failed to query node. Error: (%v). Will retry...", err)
 
 	return reconcile.Result{Requeue: true}, err
+}
+
+func (r *reconcileAzDriverNode) MarkDetachRequired(ctx context.Context, nodeName string) error {
+	attachments, err := r.azVolumeClient.DiskV1alpha1().AzVolumeAttachments(r.namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		klog.Errorf("failed to retrieve list of azVolumeAttachment objects for node %s: (%v)", err)
+		return err
+	}
+	for _, attachment := range attachments.Items {
+		if attachment.Status != nil && attachment.Status.AttachmentState != v1alpha1.DetachRequired {
+			updated := attachment.DeepCopy()
+			updated.Status = attachment.Status.DeepCopy()
+			updated.Status.AttachmentState = v1alpha1.DetachRequired
+
+			if _, err := r.azVolumeClient.DiskV1alpha1().AzVolumeAttachments(r.namespace).UpdateStatus(ctx, updated, metav1.UpdateOptions{}); err != nil {
+				klog.Errorf("failed to update status of azVolumeAttachment object attached to node %s with underlying volume %s: (%v)", attachment.Spec.NodeName, attachment.Spec.UnderlyingVolume, err)
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // InitializeAzDriverNodeController initializes azdrivernode-controller

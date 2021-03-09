@@ -29,12 +29,13 @@ type AzVolume struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	Spec   AzVolumeSpec   `json:"spec"`
-	Status AzVolumeStatus `json:"status"`
+	Status AzVolumeStatus `json:"status,omitempty"`
 }
 
 // AzVolumeSpec is the spec for a AzVolume resource
 type AzVolumeSpec struct {
 	UnderlyingVolume string `json:"underlyingVolume"`
+	StorageClass     string `json:"storageClass"`
 }
 
 // AzVolumeStatus is the status for a AzVolume resource
@@ -56,22 +57,56 @@ type AzVolumeList struct {
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // AzVolumeAttachment is a specification for a AzVolumeAttachment resource
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:scope=Namespaced
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="NodeName",type=string,JSONPath=`.spec.nodeName`,description="Name of the Node which this AzVolumeAttachment object is attached to"
+// +kubebuilder:printcolumn:name="UnderlyingVolume",type=string,JSONPath=`.spec.underlyingVolume`,description="Name of the Volume which this AzVolumeAttachment object references"
+// +kubebuilder:printcolumn:name="AttachmentTier",type=string,JSONPath=`.spec.attachmentTier`,description="Indicates if the volume attachment should be primary attachment or not"
+// +kubebuilder:printcolumn:name="AttachmentState",type=string,JSONPath=`.status.attachmentState`,description="Indicates if the volume is currently attached or detached to the specified node"
+// +kubebuilder:printcolumn:name="AttachmentTier",type=string,JSONPath=`.status.attachmentTier`,description="Indicates if the volume attachment is primary attachment or not"
 type AzVolumeAttachment struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   AzVolumeAttachmentSpec   `json:"spec"`
-	Status AzVolumeAttachmentStatus `json:"status"`
+	Spec   AzVolumeAttachmentSpec    `json:"spec"`
+	Status *AzVolumeAttachmentStatus `json:"status,omitempty"`
 }
 
 // AzVolumeAttachmentSpec is the spec for a AzVolumeAttachment resource
 type AzVolumeAttachmentSpec struct {
-	UnderlyingVolume string `json:"underlyingVolume"`
+	UnderlyingVolume string         `json:"underlyingVolume"`
+	NodeName         string         `json:"nodeName"`
+	AttachmentTier   AttachmentTier `json:"attachmentTier"`
 }
+
+// AttachmentTier indicates if the volume attachment is replica attachment or not
+type AttachmentTier string
+
+const (
+	// Primary indicates that the specified node the volume is attached to is where the pod is currently running on
+	Primary AttachmentTier = "Primary"
+	// Replica indicates that the specified node the volume is attached to is one of replicas that pod can failover to if the primary node fails
+	Replica AttachmentTier = "Replica"
+)
+
+// AttachmentState indicates if the volume is currently attached or detached to the specified node
+type AttachmentState string
+
+const (
+	// AttachRequired indicates that the volume needs to be attached to the specified node
+	AttachRequired AttachmentState = "AttachRequired"
+	// Attached indicates the volume has successfully been attached to the specified node
+	Attached AttachmentState = "Attached"
+	// DetachRequired indicates that the volume needs to be detached from the specified node,
+	// the azvolumeattachment object will be deleted after detach operation is completed
+	DetachRequired AttachmentState = "DetachRequired"
+)
 
 // AzVolumeAttachmentStatus is the status for a AzVolumeAttachment resource
 type AzVolumeAttachmentStatus struct {
-	UnderlyingVolume int32 `json:"underlyingVolume"`
+	AttachmentTier  AttachmentTier  `json:"attachmentTier"`
+	AttachmentState AttachmentState `json:"attachmentState"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

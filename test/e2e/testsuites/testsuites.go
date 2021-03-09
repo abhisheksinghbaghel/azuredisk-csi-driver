@@ -31,6 +31,7 @@ import (
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -49,6 +50,8 @@ import (
 	testutil "k8s.io/kubernetes/test/utils"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 
+	"sigs.k8s.io/azuredisk-csi-driver/pkg/apis/azuredisk/v1alpha1"
+	v1alpha1Client "sigs.k8s.io/azuredisk-csi-driver/pkg/apis/client/clientset/versioned/typed/azuredisk/v1alpha1"
 	"sigs.k8s.io/azuredisk-csi-driver/pkg/azuredisk"
 )
 
@@ -896,4 +899,57 @@ func waitForPersistentVolumeClaimDeleted(c clientset.Interface, ns string, pvcNa
 		}
 	}
 	return fmt.Errorf("PersistentVolumeClaim %s is not removed from the system within %v", pvcName, timeout)
+}
+
+// Wait for the azVolumeAttachment object update
+func WaitForAttach(c v1alpha1Client.AzVolumeAttachmentInterface, ns, name string, timeout time.Duration) error {
+	conditionFunc := func() (bool, error) {
+		att, err := c.Get(context.TODO(), name, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		if att.Status != nil && att.Status.AttachmentState == v1alpha1.Attached {
+			klog.Infof("AttachmentState = %v", att.Status.AttachmentState)
+			return true, nil
+		}
+		return false, nil
+	}
+	return wait.PollImmediate(time.Duration(15)*time.Second, timeout, conditionFunc)
+}
+
+// Wait for the azVolumeAttachment object update
+func WaitForDelete(c v1alpha1Client.AzVolumeAttachmentInterface, ns, name string, timeout time.Duration) error {
+	conditionFunc := func() (bool, error) {
+		_, err := c.Get(context.TODO(), name, metav1.GetOptions{})
+		if errors.IsNotFound(err) {
+			klog.Infof("azVolumeAttachment %s deleted.", name)
+			return true, nil
+		} else if err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	return wait.PollImmediate(time.Duration(15)*time.Second, timeout, conditionFunc)
+}
+
+// Wait for the azVolumeAttachment object update
+func WaitForReplicas(c v1alpha1Client.AzVolumeAttachmentInterface, ns, volName string, numReplica int, timeout time.Duration) error {
+	conditionFunc := func() (bool, error) {
+		attachments, err := c.List(context.TODO(), metav1.ListOptions{})
+		if err != nil {
+			return false, err
+		}
+		counter := 0
+		for _, attachment := range attachments.Items {
+			if attachment.Status == nil {
+				continue
+			}
+			if attachment.Spec.UnderlyingVolume == volName && attachment.Status.AttachmentTier == v1alpha1.Replica {
+				counter++
+			}
+		}
+		klog.Infof("%d replica found for volume %s", counter, volName)
+		return counter == numReplica, nil
+	}
+	return wait.PollImmediate(time.Duration(15)*time.Second, timeout, conditionFunc)
 }
