@@ -108,12 +108,12 @@ type CSIDriver interface {
 // DriverCore contains fields common to both the V1 and V2 driver, and implements all interfaces of CSI drivers
 type DriverCore struct {
 	csicommon.CSIDriver
-	cloud *azure.Cloud
 }
 
 // Driver is the v1 implementation of the Azure Disk CSI Driver.
 type Driver struct {
 	DriverCore
+	cloud       *azure.Cloud
 	mounter     *mount.SafeFormatAndMount
 	volumeLocks *volumehelper.VolumeLocks
 }

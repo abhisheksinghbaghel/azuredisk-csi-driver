@@ -40,7 +40,6 @@ import (
 	"k8s.io/klog/v2"
 
 	azuredisk "sigs.k8s.io/azuredisk-csi-driver/pkg/apis/azuredisk/v1alpha1"
-	azDiskClientSet "sigs.k8s.io/azuredisk-csi-driver/pkg/apis/client/clientset/versioned"
 	"sigs.k8s.io/azuredisk-csi-driver/pkg/controller"
 	csicommon "sigs.k8s.io/azuredisk-csi-driver/pkg/csi-common"
 	"sigs.k8s.io/azuredisk-csi-driver/pkg/provisioner"
@@ -52,6 +51,7 @@ var isControllerPlugin = flag.Bool("is-controller-plugin", false, "Boolean flag 
 var isNodePlugin = flag.Bool("is-node-plugin", false, "Boolean flag to indicate this instance is running as node daemon.")
 var driverObjectNamespace = flag.String("driver-object-namespace", "azure-disk-csi", "namespace where driver related custom resources are created.")
 var useDriverV2 = flag.Bool("temp-use-driver-v2", false, "A temporary flag to enable early test and development of Azure Disk CSI Driver V2. This will be removed in the future.")
+var useAzDisk = flag.Bool("temp-use-azuredisk", true, "A flag to use azure disk. Mainly to be used for testing.")
 var heartbeatFrequencyInSec = flag.Int("heartbeat-frequency-in-sec", 30, "Frequency in seconds at which node driver sends heartbeat.")
 var controllerLeaseDurationInSec = flag.Int("lease-duration-in-sec", 30, "Frequency in seconds at which node driver sends heartbeat.")
 var controllerLeaseRenewDeadlineInSec = flag.Int("lease-renew-deadline-in-sec", 24, "Frequency in seconds at which node driver sends heartbeat.")
@@ -69,6 +69,7 @@ const DefaultPrefixLength = 30
 type DriverV2 struct {
 	DriverCore
 	nodeProvisioner                   NodeProvisioner
+	controllerProvisioner             ControllerProvisioner
 	volumeLocks                       *volumehelper.VolumeLocks
 	objectNamespace                   string
 	nodePartition                     string
@@ -79,7 +80,6 @@ type DriverV2 struct {
 	controllerLeaseRetryPeriodInSec   int
 	kubeConfig                        *rest.Config
 	kubeClient                        clientset.Interface
-	azDiskClient                      azDiskClientSet.Interface
 }
 
 // NewDriver creates a Driver or DriverV2 object depending on the --temp-use-driver-v2 flag.
@@ -138,6 +138,8 @@ func (d *DriverV2) Run(endpoint, kubeConfigPath string, testBool bool) {
 	if err != nil || d.kubeClient == nil {
 		klog.Fatalf("failed to get kubeclient with kubeconfig (%s), error: %v. Exiting application...", kubeConfigPath, err)
 	}
+
+	d.controllerProvisioner = provisioner.NewControllerProvisioner(useAzDisk, d.kubeConfig, d.kubeClient)
 
 	d.azDiskClient, err = getAzDiskClient(d.kubeConfig)
 	if err != nil || d.azDiskClient == nil {
@@ -434,19 +436,6 @@ func (d *DriverV2) RunAzDriverNodeHeartbeatLoop(ctx context.Context) {
 			continue
 		}
 	}
-}
-
-// gets the AzVolume cluster client
-func getAzDiskClient(config *rest.Config) (
-	*azDiskClientSet.Clientset,
-	error) {
-
-	azDiskClient, err := azDiskClientSet.NewForConfig(config)
-	if err != nil {
-		return nil, err
-	}
-
-	return azDiskClient, nil
 }
 
 // klogWriter is used in SetOutputBySeverity call below to redirect
