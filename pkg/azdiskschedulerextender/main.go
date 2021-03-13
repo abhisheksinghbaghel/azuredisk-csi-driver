@@ -65,6 +65,8 @@ func main() {
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		klog.Fatalf("Exiting. Error starting extender server: %v", err)
 	}
+
+	initSchedulerExtender()
 	klog.V(2).Infof("Exiting azdiskschedulerextender ...")
 	os.Exit(0)
 }

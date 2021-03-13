@@ -20,9 +20,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"sync"
 	"testing"
@@ -37,9 +39,39 @@ import (
 )
 
 var (
-	handlerFilter     = http.HandlerFunc(handleFilterRequest)
-	handlerPrioritize = http.HandlerFunc(handlePrioritizeRequest)
+	handlerFilter          = http.HandlerFunc(handleFilterRequest)
+	handlerPrioritize      = http.HandlerFunc(handlePrioritizeRequest)
+	KubeConfigFileEnvVar   = "KUBECONFIG"
+	validKubeConfigPath    = "valid-Kube-Config-Path"
+	validKubeConfigContent = `
+	apiVersion: v1
+    clusters:
+    - cluster:
+        server: https://foo-cluster-dns-57e0bda1.hcp.westus2.azmk8s.io:443
+      name: foo-cluster
+    contexts:
+    - context:
+        cluster: foo-cluster
+        user: clusterUser_foo-rg_foo-cluster
+      name: foo-cluster
+    current-context: foo-cluster
+    kind: Config
+    preferences: {}
+    users:
+    - name: clusterUser_foo-rg_foo-cluster
+      user:
+`
 )
+
+func TestMain(m *testing.M) {
+	existingConfigPath, _ := createConfigFileAndSetEnv(validKubeConfigPath, validKubeConfigContent, KubeConfigFileEnvVar)
+
+	exitVal := m.Run()
+	if len(existingConfigPath) > 0 {
+		defer cleanConfigAndRestoreEnv(validKubeConfigPath, KubeConfigFileEnvVar, existingConfigPath)
+	}
+	os.Exit(exitVal)
+}
 
 func TestFilterAndPrioritizeRequestResponseCode(t *testing.T) {
 	tests := []struct {
@@ -808,3 +840,32 @@ func getDriverNode(driverNodeName, ns, nodeName, state string) v1alpha1Client.Az
 // 		},
 // 	}
 // }
+
+func createConfigFileAndSetEnv(path string, content string, envVariableName string) (string, error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	if err != nil {
+		return "", err
+	}
+
+	if err := ioutil.WriteFile(path, []byte(content), 0666); err != nil {
+		return "", err
+	}
+
+	envValue, _ := os.LookupEnv(envVariableName)
+	err = os.Setenv(envVariableName, path)
+	if err != nil {
+		return "", fmt.Errorf("Failed to set env variable")
+	}
+
+	return envValue, err
+}
+
+func cleanConfigAndRestoreEnv(path string, envVariableName string, envValue string) {
+	defer os.Setenv(envVariableName, envValue)
+	os.Remove(path)
+}

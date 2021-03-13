@@ -51,7 +51,7 @@ type azVolumeAttachmentsMeta struct {
 	err     error
 }
 
-func init() {
+func initSchedulerExtender() {
 	var err error
 	kubeExtensionClientset, err = getKubernetesExtensionClientsets()
 	if err != nil {
@@ -81,7 +81,11 @@ func filter(context context.Context, schedulerExtenderArgs schedulerapi.Extender
 		go getAzDriverNodes(context, nodesChan)
 		azDriverNodesMeta := <-nodesChan
 		if azDriverNodesMeta.err != nil {
-			return nil, fmt.Errorf("Failed to get the list of azDriverNodes: %v", azDriverNodesMeta.err)
+			filteredNodes = schedulerExtenderArgs.Nodes.Items
+			filteredNodeNames = *schedulerExtenderArgs.NodeNames
+			klog.V(2).Infof("Failed to get the list of azDriverNodes: %v", azDriverNodesMeta.err)
+
+			return formatFilterResult(filteredNodes, filteredNodeNames, failedNodes, ""), nil
 		}
 
 		// map node name to azDriverNode state
@@ -114,10 +118,7 @@ func prioritize(context context.Context, schedulerExtenderArgs schedulerapi.Exte
 	//TODO add RWM volume case here
 	// if no volumes are requested, return assigning 0 score to all nodes
 	if len(requestedVolumes) == 0 {
-		for _, node := range availableNodes {
-			hostPriority := schedulerapi.HostPriority{Host: node.Name, Score: 0}
-			priorityList = append(priorityList, hostPriority)
-		}
+		priorityList = setNodeSocresToZero(availableNodes)
 	} else {
 		volumesPodNeeds := make(map[string]struct{})
 		nodeNameToVolumeMap, nodeNameToHeartbeatMap := make(map[string][]string), make(map[string]string)
@@ -134,7 +135,9 @@ func prioritize(context context.Context, schedulerExtenderArgs schedulerapi.Exte
 		// get all nodes that have azDriverNode running
 		azDriverNodesMeta := <-nodesChan
 		if azDriverNodesMeta.err != nil {
-			return nil, fmt.Errorf("Failed to get the list of azDriverNodes: %v", azDriverNodesMeta.err)
+			priorityList = setNodeSocresToZero(availableNodes)
+			klog.V(2).Infof("Failed to get the list of azDriverNodes: %v", azDriverNodesMeta.err)
+			return
 		}
 
 		// map azDriverNode name to its heartbeat
@@ -145,7 +148,9 @@ func prioritize(context context.Context, schedulerExtenderArgs schedulerapi.Exte
 		// get all azVolumeAttachments running in the cluster
 		azVolumeAttachmentsMeta := <-volumesChan
 		if azVolumeAttachmentsMeta.err != nil {
-			return nil, fmt.Errorf("Failed to get the list of azVolumeAttachments: %v", azVolumeAttachmentsMeta.err)
+			priorityList = setNodeSocresToZero(availableNodes)
+			klog.V(2).Infof("Failed to get the list of azVolumeAttachments: %v", azVolumeAttachmentsMeta.err)
+			return
 		}
 
 		// for every volume the pod needs, append its azVolumeAttachment name to the node name
@@ -261,4 +266,12 @@ func formatFilterResult(filteredNodes []v1.Node, nodeNames []string, failedNodes
 		FailedNodes: failedNodes,
 		Error:       errorMessage,
 	}
+}
+
+func setNodeSocresToZero(nodes []v1.Node) (priorityList schedulerapi.HostPriorityList) {
+	for _, node := range nodes {
+		hostPriority := schedulerapi.HostPriority{Host: node.Name, Score: 0}
+		priorityList = append(priorityList, hostPriority)
+	}
+	return
 }
