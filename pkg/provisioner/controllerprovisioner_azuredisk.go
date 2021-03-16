@@ -39,12 +39,12 @@ import (
 	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
 )
 
-type AzureDiskControllerProvisioner struct {
+type ControllerProvisioner struct {
 	Cloud        *azure.Cloud
 	azDiskClient azDiskClientSet.Interface
 }
 
-func (c *AzureDiskControllerProvisioner) ValidateControllerCreateVolumeParameters(params map[string]string) error {
+func (c *ControllerProvisioner) ValidateControllerCreateVolumeParameters(params map[string]string) error {
 	if azureutils.IsAzureStackCloud(c.Cloud.Config.Cloud, c.Cloud.Config.DisableAzureStackCloud) {
 		maxSharesField := "maxSharesField"
 		var maxShares int
@@ -71,7 +71,7 @@ func (c *AzureDiskControllerProvisioner) ValidateControllerCreateVolumeParameter
 }
 
 // GetSourceDiskSize recursively searches for the sourceDisk and returns: sourceDisk disk size, error
-func (c *AzureDiskControllerProvisioner) GetSourceDiskSize(ctx context.Context, resourceGroup, diskName string, curDepth, maxDepth int) (*int32, error) {
+func (c *ControllerProvisioner) GetSourceDiskSize(ctx context.Context, resourceGroup, diskName string, curDepth, maxDepth int) (*int32, error) {
 	if curDepth > maxDepth {
 		return nil, status.Error(codes.Internal, fmt.Sprintf("current depth (%d) surpassed the max depth (%d) while searching for the source disk size", curDepth, maxDepth))
 	}
@@ -97,31 +97,31 @@ func (c *AzureDiskControllerProvisioner) GetSourceDiskSize(ctx context.Context, 
 	return (*result.DiskProperties).DiskSizeGB, nil
 }
 
-func (c *AzureDiskControllerProvisioner) GetValidDiskName(diskName string) string {
+func (c *ControllerProvisioner) GetValidDiskName(diskName string) string {
 	return azureutils.GetValidDiskName(diskName)
 }
 
-func (c *AzureDiskControllerProvisioner) ValidateDiskURI(diskURI string) error {
+func (c *ControllerProvisioner) ValidateDiskURI(diskURI string) error {
 	return azureutils.IsValidDiskURI(diskURI)
 }
 
-func (c *AzureDiskControllerProvisioner) GetDiskNameFromDiskURI(diskURI string) (string, error) {
+func (c *ControllerProvisioner) GetDiskNameFromDiskURI(diskURI string) (string, error) {
 	return azureutils.GetDiskNameFromAzureManagedDiskURI(diskURI)
 }
 
-func (c *AzureDiskControllerProvisioner) GetResourceGroupFromDiskURI(diskURI string) (string, error) {
+func (c *ControllerProvisioner) GetResourceGroupFromDiskURI(diskURI string) (string, error) {
 	return azureutils.GetResourceGroupFromAzureManagedDiskURI(diskURI)
 }
 
-func (c *AzureDiskControllerProvisioner) ValidateAndNormalizeStorageAccountType(storageAccountType string) (compute.DiskStorageAccountTypes, error) {
+func (c *ControllerProvisioner) ValidateAndNormalizeStorageAccountType(storageAccountType string) (compute.DiskStorageAccountTypes, error) {
 	return azureutils.NormalizeAzureStorageAccountType(storageAccountType, c.Cloud.Config.Cloud, c.Cloud.Config.DisableAzureStackCloud)
 }
 
-func (c *AzureDiskControllerProvisioner) ValidateAndNormalizeCachingMode(cachingMode v1.AzureDataDiskCachingMode) (v1.AzureDataDiskCachingMode, error) {
+func (c *ControllerProvisioner) ValidateAndNormalizeCachingMode(cachingMode v1.AzureDataDiskCachingMode) (v1.AzureDataDiskCachingMode, error) {
 	return azureutils.NormalizeAzureDataDiskCachingMode(cachingMode)
 }
 
-func (c *AzureDiskControllerProvisioner) CreateDisk(options *CreateDiskOptions) (string, error) {
+func (c *ControllerProvisioner) CreateDisk(options *CreateDiskOptions) (string, error) {
 	diskOptions := &azure.ManagedDiskOptions{
 		DiskName:            options.DiskName,
 		StorageAccountType:  options.StorageAccountType,
@@ -142,11 +142,11 @@ func (c *AzureDiskControllerProvisioner) CreateDisk(options *CreateDiskOptions) 
 	return c.Cloud.CreateManagedDisk(diskOptions)
 }
 
-func (c *AzureDiskControllerProvisioner) DeleteDisk(diskURI string) error {
+func (c *ControllerProvisioner) DeleteDisk(diskURI string) error {
 	return c.Cloud.DeleteManagedDisk(diskURI)
 }
 
-func (c *AzureDiskControllerProvisioner) CheckDiskExists(ctx context.Context, diskURI string) error {
+func (c *ControllerProvisioner) CheckDiskExists(ctx context.Context, diskURI string) error {
 	diskName, err := azureutils.GetDiskNameFromAzureManagedDiskURI(diskURI)
 	if err != nil {
 		return err
@@ -164,11 +164,11 @@ func (c *AzureDiskControllerProvisioner) CheckDiskExists(ctx context.Context, di
 	return nil
 }
 
-func (c *AzureDiskControllerProvisioner) GetDiskLun(diskName string, diskURI string, nodeName types.NodeName) (int32, error) {
+func (c *ControllerProvisioner) GetDiskLun(diskName string, diskURI string, nodeName types.NodeName) (int32, error) {
 	return c.Cloud.GetDiskLun(diskName, diskURI, nodeName)
 }
 
-func (c *AzureDiskControllerProvisioner) GetCachingMode(attributes map[string]string) (compute.CachingTypes, error) {
+func (c *ControllerProvisioner) GetCachingMode(attributes map[string]string) (compute.CachingTypes, error) {
 	var (
 		cachingMode v1.AzureDataDiskCachingMode
 		err         error
@@ -187,15 +187,15 @@ func (c *AzureDiskControllerProvisioner) GetCachingMode(attributes map[string]st
 	return compute.CachingTypes(cachingMode), err
 }
 
-func (c *AzureDiskControllerProvisioner) AttachDisk(options *AttachDetachDiskOptions) (int32, error) {
+func (c *ControllerProvisioner) AttachDisk(options *AttachDetachDiskOptions) (int32, error) {
 	return c.Cloud.AttachDisk(options.IsManagedDisk, options.DiskName, options.DiskURI, options.NodeName, options.CachingMode)
 }
 
-func (c *AzureDiskControllerProvisioner) DetachDisk(options *AttachDetachDiskOptions) error {
+func (c *ControllerProvisioner) DetachDisk(options *AttachDetachDiskOptions) error {
 	return c.Cloud.DetachDisk(options.DiskName, options.DiskURI, options.NodeName)
 }
 
-func (c *AzureDiskControllerProvisioner) SetIncrementalValueForCreateSnapshot() bool {
+func (c *ControllerProvisioner) SetIncrementalValueForCreateSnapshot() bool {
 	incremental := true
 	if azureutils.IsAzureStackCloud(c.Cloud.Config.Cloud, c.Cloud.Config.DisableAzureStackCloud) {
 		klog.V(2).Info("Use full snapshot instead as Azure Stack does not incremental snapshot.")
@@ -205,15 +205,15 @@ func (c *AzureDiskControllerProvisioner) SetIncrementalValueForCreateSnapshot() 
 	return incremental
 }
 
-func (c *AzureDiskControllerProvisioner) CreateOrUpdateSnapshot(options *SnapshotOptions) *retry.Error {
+func (c *ControllerProvisioner) CreateOrUpdateSnapshot(options *SnapshotOptions) *retry.Error {
 	return c.Cloud.SnapshotsClient.CreateOrUpdate(options.Context, options.ResourceGroup, options.SnapshotName, options.Snapshot)
 }
 
-func (c *AzureDiskControllerProvisioner) DeleteSnapshot(options *SnapshotOptions) *retry.Error {
+func (c *ControllerProvisioner) DeleteSnapshot(options *SnapshotOptions) *retry.Error {
 	return c.Cloud.SnapshotsClient.Delete(options.Context, options.ResourceGroup, options.SnapshotName)
 }
 
-func (c *AzureDiskControllerProvisioner) GetSnapshotInfoByID(snapshotID string) (string, string, error) {
+func (c *ControllerProvisioner) GetSnapshotInfoByID(snapshotID string) (string, string, error) {
 	var (
 		snapshotName  string
 		resourceGroup string
@@ -227,7 +227,7 @@ func (c *AzureDiskControllerProvisioner) GetSnapshotInfoByID(snapshotID string) 
 	return snapshotName, resourceGroup, err
 }
 
-func (c *AzureDiskControllerProvisioner) GetSnapshotByID(options *SnapshotOptions) (*csi.Snapshot, error) {
+func (c *ControllerProvisioner) GetSnapshotByID(options *SnapshotOptions) (*csi.Snapshot, error) {
 	snapshotName, resourceGroupName, err := c.GetSnapshotInfoByID(options.SnapshotName)
 	if err != nil {
 		return nil, err
@@ -246,26 +246,26 @@ func (c *AzureDiskControllerProvisioner) GetSnapshotByID(options *SnapshotOption
 	return azureutils.GenerateCSISnapshot(options.SourceVolumeID, &snapshot)
 }
 
-func (c *AzureDiskControllerProvisioner) ListSnapshotsInCurrentResourceGroup(ctx context.Context) ([]compute.Snapshot, *retry.Error) {
+func (c *ControllerProvisioner) ListSnapshotsInCurrentResourceGroup(ctx context.Context) ([]compute.Snapshot, *retry.Error) {
 	return c.Cloud.SnapshotsClient.ListByResourceGroup(ctx, c.Cloud.ResourceGroup)
 }
 
-func (c *AzureDiskControllerProvisioner) ListVolumesInCurrentResourceGroup(ctx context.Context, resourceGroup string) ([]compute.Disk, *retry.Error) {
+func (c *ControllerProvisioner) ListVolumesInCurrentResourceGroup(ctx context.Context, resourceGroup string) ([]compute.Disk, *retry.Error) {
 	return c.Cloud.DisksClient.ListByResourceGroup(ctx, resourceGroup)
 }
 
-func (c *AzureDiskControllerProvisioner) GetDiskInfo(ctx context.Context, resourceGroup string, diskName string) (compute.Disk, *retry.Error) {
+func (c *ControllerProvisioner) GetDiskInfo(ctx context.Context, resourceGroup string, diskName string) (compute.Disk, *retry.Error) {
 	return c.Cloud.DisksClient.Get(ctx, resourceGroup, diskName)
 }
 
-func (c *AzureDiskControllerProvisioner) ResizeDisk(diskURI string, oldSize resource.Quantity, requestSize resource.Quantity) (resource.Quantity, error) {
+func (c *ControllerProvisioner) ResizeDisk(diskURI string, oldSize resource.Quantity, requestSize resource.Quantity) (resource.Quantity, error) {
 	return c.Cloud.ResizeDisk(diskURI, oldSize, requestSize)
 }
 
-func (c *AzureDiskControllerProvisioner) GetNodeNameByProviderIDInVMSet(providerID string) (types.NodeName, error) {
+func (c *ControllerProvisioner) GetNodeNameByProviderIDInVMSet(providerID string) (types.NodeName, error) {
 	return c.Cloud.VMSet.GetNodeNameByProviderID(providerID)
 }
 
-func (c *AzureDiskControllerProvisioner) GetKubeClient() clientset.Interface {
+func (c *ControllerProvisioner) GetKubeClient() clientset.Interface {
 	return c.Cloud.KubeClient
 }

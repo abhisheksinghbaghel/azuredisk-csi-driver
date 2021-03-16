@@ -23,8 +23,6 @@ import (
 	"sigs.k8s.io/azuredisk-csi-driver/pkg/azureutils"
 )
 
-type ControllerProvisioner struct{}
-
 func NewControllerProvisioner(useAzureStorage bool, kubeConfig *rest.Config, kubeClient clientset.Interface) (*ControllerProvisioner, error) {
 	if useAzureStorage {
 		klog.V(2).Info("To use the flag when selecting amongst storage provider.")
@@ -40,7 +38,7 @@ func NewControllerProvisioner(useAzureStorage bool, kubeConfig *rest.Config, kub
 		return nil, err
 	}
 
-	return &AzureDiskControllerProvisioner{
+	return &ControllerProvisioner {
 		azDiskClient: diskClient,
 		Cloud:        azCloud,
 	}, nil
