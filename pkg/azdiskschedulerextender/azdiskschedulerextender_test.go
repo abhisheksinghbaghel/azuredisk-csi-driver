@@ -630,10 +630,11 @@ func TestFilterAndPrioritizeInRandomizedLargeCluster(t *testing.T) {
 	var nodes []v1.Node
 	var nodeNames []string
 
+	//TODO increase numberOfPodsToSchedule when changing the implemention to reuse goroutines
 	stressTestSetupParams := map[string][3]int {
-		"low": [3]int{500, 5000, 100000},
-		"avg": [3]int{1000, 10000, 100000},
-		"high": [3]int{5000, 30000, 100000},
+		"low": [3]int{500, 5000, 1000},
+		"avg": [3]int{1000, 10000, 1000},
+		"high": [3]int{5000, 30000, 1000},
 	}
 
 	//save original clients
