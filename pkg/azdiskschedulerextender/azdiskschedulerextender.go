@@ -89,16 +89,16 @@ func filter(context context.Context, schedulerExtenderArgs schedulerapi.Extender
 		}
 
 		// map node name to azDriverNode state
-		nodeNameToStatusMap := make(map[string]string)
+		nodeNameToStatusMap := make(map[string]bool)
 		for _, azDriverNode := range azDriverNodesMeta.nodes.Items {
-			nodeNameToStatusMap[azDriverNode.Spec.NodeName] = azDriverNode.Status.State
+			nodeNameToStatusMap[azDriverNode.Spec.NodeName] = *azDriverNode.Status.ReadyForVolumeAllocation
 		}
 
 		// Filter the nodes based on AzDiverNode status
 		failedNodes = make(map[string]string)
 		for _, node := range allNodes {
-			state, ok := nodeNameToStatusMap[node.Name]
-			if ok && state == "Ready" {
+			ready, ok := nodeNameToStatusMap[node.Name]
+			if ok && ready {
 				filteredNodes = append(filteredNodes, node)
 				filteredNodeNames = append(filteredNodeNames, node.Name)
 			} else {
@@ -121,7 +121,8 @@ func prioritize(context context.Context, schedulerExtenderArgs schedulerapi.Exte
 		priorityList = setNodeSocresToZero(availableNodes)
 	} else {
 		volumesPodNeeds := make(map[string]struct{})
-		nodeNameToVolumeMap, nodeNameToHeartbeatMap := make(map[string][]string), make(map[string]string)
+		nodeNameToVolumeMap:= make(map[string][]string)
+		nodeNameToHeartbeatMap :=  make(map[string]int64)
 		nodesChan, volumesChan := make(chan azDriverNodesMeta), make(chan azVolumeAttachmentsMeta)
 
 		go getAzDriverNodes(context, nodesChan)
@@ -142,7 +143,7 @@ func prioritize(context context.Context, schedulerExtenderArgs schedulerapi.Exte
 
 		// map azDriverNode name to its heartbeat
 		for _, azDriverNode := range azDriverNodesMeta.nodes.Items {
-			nodeNameToHeartbeatMap[azDriverNode.Spec.NodeName] = azDriverNode.Spec.Heartbeat
+			nodeNameToHeartbeatMap[azDriverNode.Spec.NodeName] = *azDriverNode.Status.LastHeartbeatTime
 		}
 
 		// get all azVolumeAttachments running in the cluster
@@ -224,13 +225,10 @@ func getKubernetesExtensionClientsets() (azKubeExtensionClientset *clientSet.Dis
 // 	return kubeClient, nil
 // }
 
-func getNodeScore(volumeAttachments int, heartbeat string) int64 {
+func getNodeScore(volumeAttachments int, heartbeat int64) int64 {
 	// TODO: prioritize disks with low additional volume attachments
 	now := time.Now()
-	latestHeartbeatWas, err := time.Parse(time.UnixDate, heartbeat)
-	if err != nil {
-		return 0
-	}
+	latestHeartbeatWas := time.Unix(0, heartbeat)
 
 	latestHeartbeatCanBe := now.Add(-2 * time.Minute)
 	klog.V(2).Infof("Latest node heartbeat was: %s. Latest accepted heartbeat can be: %s", heartbeat, latestHeartbeatCanBe.Format(time.UnixDate))
@@ -239,7 +237,7 @@ func getNodeScore(volumeAttachments int, heartbeat string) int64 {
 		return 0
 	}
 
-	score := int64(volumeAttachments*100) - int64(now.Sub(latestHeartbeatWas)/10000000000) //TODO fix logic when all variables are finalized
+	score := int64(volumeAttachments*100) + int64(now.UnixNano() - heartbeat*10000) //TODO fix logic when all variables are finalized
 	return score
 }
 
