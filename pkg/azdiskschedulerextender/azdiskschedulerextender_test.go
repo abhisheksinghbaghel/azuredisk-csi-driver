@@ -18,6 +18,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -30,6 +31,7 @@ import (
 	"testing"
 	"time"
 
+	crypto "crypto/rand"
 	v1 "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
@@ -631,10 +633,14 @@ func TestFilterAndPrioritizeInRandomizedLargeCluster(t *testing.T) {
 	var nodeNames []string
 
 	//TODO increase numberOfPodsToSchedule when changing the implemention to reuse goroutines
-	stressTestSetupParams := map[string][3]int{
-		"low":  [3]int{500, 5000, 1000},
-		"avg":  [3]int{1000, 10000, 1000},
-		"high": [3]int{5000, 30000, 1000},
+	stressTestSetupParams := map[string]struct {
+		numberOfNodes   int
+		numberOfVolumes int
+		numberOfPods    int
+	}{
+		"low":  {500, 5000, 1000},
+		"avg":  {1000, 10000, 1000},
+		"high": {5000, 30000, 1000},
 	}
 
 	//save original clients
@@ -646,131 +652,142 @@ func TestFilterAndPrioritizeInRandomizedLargeCluster(t *testing.T) {
 	}()
 
 	for _, setupParams := range stressTestSetupParams {
-		var tokens = make(chan struct{}, 20)
-		var wg sync.WaitGroup
-		var clusterNodes []v1alpha1Client.AzDriverNode
-		var clusterVolumes []v1alpha1Client.AzVolumeAttachment
-		numberOfClusterNodes := setupParams[0]
-		numberOfClusterVolumes := setupParams[1]
-		numberOfPodsToSchedule := setupParams[2]
+		t.Run("sd", func(t *testing.T) {
+			var tokens = make(chan struct{}, 20)
+			var wg sync.WaitGroup
+			var clusterNodes []v1alpha1Client.AzDriverNode
+			var clusterVolumes []v1alpha1Client.AzVolumeAttachment
+			numberOfClusterNodes := setupParams.numberOfNodes
+			numberOfClusterVolumes := setupParams.numberOfVolumes
+			numberOfPodsToSchedule := setupParams.numberOfPods
 
-		// generate large number of nodes
-		for i := 0; i < numberOfClusterNodes; i++ {
-			nodeName := fmt.Sprintf("node%d", i)
-			clusterNodes = append(clusterNodes, getDriverNode(fmt.Sprintf("driverNode%d", i), ns, nodeName, true))
-			nodes = append(nodes, v1.Node{ObjectMeta: meta.ObjectMeta{Name: nodeName}})
-			nodeNames = append(nodeNames, nodeName)
-		}
+			// generate large number of nodes
+			for i := 0; i < numberOfClusterNodes; i++ {
+				nodeName := fmt.Sprintf("node%d", i)
+				clusterNodes = append(clusterNodes, getDriverNode(fmt.Sprintf("driverNode%d", i), ns, nodeName, true))
+				nodes = append(nodes, v1.Node{ObjectMeta: meta.ObjectMeta{Name: nodeName}})
+				nodeNames = append(nodeNames, nodeName)
+			}
 
-		// generate volumes and assign to nodes
-		for i := 0; i < numberOfClusterVolumes; i++ {
-			clusterVolumes = append(clusterVolumes, getVolumeAttachment(fmt.Sprintf("volumeAttachment%d", i), ns, fmt.Sprintf("vol%d", i), fmt.Sprintf("node%d", rand.Intn(5000)), "Ready"))
-		}
+			// generate volumes and assign to nodes
+			for i := 0; i < numberOfClusterVolumes; i++ {
+				clusterVolumes = append(clusterVolumes, getVolumeAttachment(fmt.Sprintf("volumeAttachment%d", i), ns, fmt.Sprintf("vol%d", i), fmt.Sprintf("node%d", rand.Intn(5000)), "Ready"))
+			}
 
-		testClientSet := fakeClientSet.NewSimpleClientset(
-			&v1alpha1Client.AzVolumeAttachmentList{
-				Items: clusterVolumes,
-			},
-			&v1alpha1Client.AzDriverNodeList{
-				Items: clusterNodes,
-			})
+			testClientSet := fakeClientSet.NewSimpleClientset(
+				&v1alpha1Client.AzVolumeAttachmentList{
+					Items: clusterVolumes,
+				},
+				&v1alpha1Client.AzDriverNodeList{
+					Items: clusterNodes,
+				})
 
-		// continue with fake clients
-		azVolumeAttachmentExtensionClient = testClientSet.DiskV1alpha1().AzVolumeAttachments(ns)
-		azDriverNodeExtensionClient = testClientSet.DiskV1alpha1().AzDriverNodes(ns)
+			// continue with fake clients
+			azVolumeAttachmentExtensionClient = testClientSet.DiskV1alpha1().AzVolumeAttachments(ns)
+			azDriverNodeExtensionClient = testClientSet.DiskV1alpha1().AzDriverNodes(ns)
 
-		var errorChan = make(chan error, numberOfPodsToSchedule)
-		for j := 0; j < numberOfPodsToSchedule; j++ {
-			wg.Add(1)
+			var errorChan = make(chan error, numberOfPodsToSchedule)
+			for j := 0; j < numberOfPodsToSchedule; j++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+
+					var testPodVolumes []v1.Volume
+					seed := make([]byte, 8)
+					_, err := crypto.Read(seed)
+					if err != nil {
+						klog.Errorf("Generating rand seed for podCount failed: %v ", err)
+						t.Fatal(err)
+					}
+					rng := rand.New(rand.NewSource(int64(binary.LittleEndian.Uint64(seed[:]))))
+
+					// randomly assign volumes to pod
+					podVolCount := rng.Intn(256)
+					for i := 0; i < podVolCount; i++ {
+						testPodVolumes = append(testPodVolumes, v1.Volume{Name: fmt.Sprintf("vol%d", rand.Intn(numberOfClusterVolumes))})
+					}
+
+					testPod := &v1.Pod{
+						ObjectMeta: meta.ObjectMeta{Name: "pod"},
+						Spec: v1.PodSpec{
+							Volumes: testPodVolumes}}
+
+					schedulerArgs := schedulerapi.ExtenderArgs{
+						Pod:       testPod,
+						Nodes:     &v1.NodeList{Items: nodes},
+						NodeNames: &nodeNames,
+					}
+
+					responseFilter := httptest.NewRecorder()
+					responsePrioritize := httptest.NewRecorder()
+					requestArgs, err := json.Marshal(schedulerArgs)
+					if err != nil {
+						errorChan <- fmt.Errorf("Json encoding failed")
+						return
+					}
+
+					tokens <- struct{}{} // acquire a token
+					filterRequest, err := http.NewRequest("POST", filterRequestStr, bytes.NewReader(requestArgs))
+					if err != nil {
+						errorChan <- err
+						return
+					}
+
+					handlerFilter.ServeHTTP(responseFilter, filterRequest)
+					if responseFilter.Code != 200 {
+						errorChan <- fmt.Errorf("Filter request failed for %s. Got %d want %d", requestArgs, responseFilter.Code, 200)
+						return
+					}
+
+					prioritizeRequest, err := http.NewRequest("POST", prioritizeRequestStr, bytes.NewReader(requestArgs))
+					if err != nil {
+						errorChan <- err
+						return
+					}
+
+					handlerPrioritize.ServeHTTP(responsePrioritize, prioritizeRequest)
+					if responsePrioritize.Code != 200 {
+						errorChan <- fmt.Errorf("Filter request failed for %s. Got %d want %d", requestArgs, responsePrioritize.Code, 200)
+						return
+					}
+
+					decoder := json.NewDecoder(responseFilter.Body)
+					var filterResult schedulerapi.ExtenderFilterResult
+					if err := decoder.Decode(&filterResult); err != nil {
+						errorChan <- fmt.Errorf("handleFilterRequest: Error decoding filter request: %v", err)
+						return
+					}
+
+					decoder = json.NewDecoder(responsePrioritize.Body)
+					var prioritizeList schedulerapi.HostPriorityList
+					if err := decoder.Decode(&prioritizeList); err != nil {
+						errorChan <- fmt.Errorf("handlePrioritizeRequest: Error decoding filter request: %v", err)
+						return
+					}
+					errorChan <- nil
+					<-tokens //release the token
+				}()
+			}
+
 			go func() {
-				defer wg.Done()
-				var testPodVolumes []v1.Volume
-				// randomly assign volumes to pod
-				podVolCount := rand.Intn(256)
-				for i := 0; i < podVolCount; i++ {
-					testPodVolumes = append(testPodVolumes, v1.Volume{Name: fmt.Sprintf("vol%d", rand.Intn(numberOfClusterVolumes))})
-				}
-
-				testPod := &v1.Pod{
-					ObjectMeta: meta.ObjectMeta{Name: "pod"},
-					Spec: v1.PodSpec{
-						Volumes: testPodVolumes}}
-
-				schedulerArgs := schedulerapi.ExtenderArgs{
-					Pod:       testPod,
-					Nodes:     &v1.NodeList{Items: nodes},
-					NodeNames: &nodeNames,
-				}
-
-				responseFilter := httptest.NewRecorder()
-				responsePrioritize := httptest.NewRecorder()
-				requestArgs, err := json.Marshal(schedulerArgs)
-				if err != nil {
-					errorChan <- fmt.Errorf("Json encoding failed")
-					return
-				}
-
-				tokens <- struct{}{} // acquire a token
-				filterRequest, err := http.NewRequest("POST", filterRequestStr, bytes.NewReader(requestArgs))
-				if err != nil {
-					errorChan <- err
-					return
-				}
-
-				handlerFilter.ServeHTTP(responseFilter, filterRequest)
-				if responseFilter.Code != 200 {
-					errorChan <- fmt.Errorf("Filter request failed for %s. Got %d want %d", requestArgs, responseFilter.Code, 200)
-					return
-				}
-
-				prioritizeRequest, err := http.NewRequest("POST", prioritizeRequestStr, bytes.NewReader(requestArgs))
-				if err != nil {
-					errorChan <- err
-					return
-				}
-
-				handlerPrioritize.ServeHTTP(responsePrioritize, prioritizeRequest)
-				if responsePrioritize.Code != 200 {
-					errorChan <- fmt.Errorf("Filter request failed for %s. Got %d want %d", requestArgs, responsePrioritize.Code, 200)
-					return
-				}
-
-				decoder := json.NewDecoder(responseFilter.Body)
-				var filterResult schedulerapi.ExtenderFilterResult
-				if err := decoder.Decode(&filterResult); err != nil {
-					errorChan <- fmt.Errorf("handleFilterRequest: Error decoding filter request: %v", err)
-					return
-				}
-
-				decoder = json.NewDecoder(responsePrioritize.Body)
-				var prioritizeList schedulerapi.HostPriorityList
-				if err := decoder.Decode(&prioritizeList); err != nil {
-					errorChan <- fmt.Errorf("handlePrioritizeRequest: Error decoding filter request: %v", err)
-					return
-				}
-				errorChan <- nil
-				<-tokens //release the token
+				wg.Wait()
+				close(errorChan)
+				close(tokens)
 			}()
-		}
 
-		go func() {
-			wg.Wait()
-			close(errorChan)
-			close(tokens)
-		}()
-
-		j := 0
-		for err := range errorChan {
-			if err != nil {
-				klog.Errorf("Error during stress test: %v ", err)
-				t.Fatal(err)
+			j := 0
+			for err := range errorChan {
+				if err != nil {
+					klog.Errorf("Error during stress test: %v ", err)
+					t.Fatal(err)
+				}
+				j++
+				if j > numberOfPodsToSchedule { // TODO remove. Helps with debugging otherwise unnecessary
+					klog.Info("Test ran successfully.")
+					break
+				}
 			}
-			j++
-			if j > numberOfPodsToSchedule { // TODO remove. Helps with debugging otherwise unnecessary
-				klog.Info("Test ran successfully.")
-				break
-			}
-		}
+		})
 	}
 }
 
