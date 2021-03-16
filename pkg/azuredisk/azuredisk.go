@@ -39,7 +39,6 @@ import (
 	csicommon "sigs.k8s.io/azuredisk-csi-driver/pkg/csi-common"
 	"sigs.k8s.io/azuredisk-csi-driver/pkg/mounter"
 	volumehelper "sigs.k8s.io/azuredisk-csi-driver/pkg/util"
-	"sigs.k8s.io/cloud-provider-azure/pkg/provider"
 	azure "sigs.k8s.io/cloud-provider-azure/pkg/provider"
 )
 
@@ -379,14 +378,4 @@ func (d *DriverCore) setNodeID(nodeID string) {
 // setName sets the Version field. It is intended for use with unit tests.
 func (d *DriverCore) setVersion(version string) {
 	d.Version = version
-}
-
-// getCloud returns the value of the cloud field. It is intended for use with unit tests.
-func (d *DriverCore) getCloud() *provider.Cloud {
-	return d.cloud
-}
-
-// setCloud sets the cloud field. It is intended for use with unit tests.
-func (d *DriverCore) setCloud(cloud *provider.Cloud) {
-	d.cloud = cloud
 }

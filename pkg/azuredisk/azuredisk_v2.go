@@ -139,24 +139,16 @@ func (d *DriverV2) Run(endpoint, kubeConfigPath string, testBool bool) {
 		klog.Fatalf("failed to get kubeclient with kubeconfig (%s), error: %v. Exiting application...", kubeConfigPath, err)
 	}
 
-	d.controllerProvisioner = provisioner.NewControllerProvisioner(useAzDisk, d.kubeConfig, d.kubeClient)
-
-	d.azDiskClient, err = getAzDiskClient(d.kubeConfig)
-	if err != nil || d.azDiskClient == nil {
-		klog.Fatalf("failed to get azDiskClient config (%s), error: %v. Exiting application...", kubeConfigPath, err)
+	d.controllerProvisioner, err = provisioner.NewControllerProvisioner(useAzDisk, d.kubeConfig, d.kubeClient)
+	if err != nil {
+		klog.Fatalf("Failed to get controller provisioner. Error: %v", err)
 	}
-
-	cloud, err := GetCloudProvider(d.kubeClient)
-	if err != nil || cloud.TenantID == "" || cloud.SubscriptionID == "" {
-		klog.Fatalf("failed to get Azure Cloud Provider, error: %v. Exiting application...", err)
-	}
-	d.cloud = cloud
 
 	if d.NodeID == "" {
 		// Disable UseInstanceMetadata for controller to mitigate a timeout issue using IMDS
 		// https://github.com/kubernetes-sigs/azuredisk-csi-driver/issues/168
 		klog.Infoln("disable UseInstanceMetadata for controller")
-		d.cloud.Config.UseInstanceMetadata = false
+		d.controllerProvisioner.Cloud.Config.UseInstanceMetadata = false
 	}
 
 	d.nodeProvisioner, err = provisioner.NewNodeProvisioner()
@@ -211,26 +203,8 @@ func (d *DriverV2) Run(endpoint, kubeConfigPath string, testBool bool) {
 	cancel()
 }
 
-func (d *DriverV2) checkDiskExists(ctx context.Context, diskURI string) error {
-	diskName, err := GetDiskName(diskURI)
-	if err != nil {
-		return err
-	}
-
-	resourceGroup, err := GetResourceGroupFromURI(diskURI)
-	if err != nil {
-		return err
-	}
-
-	if _, rerr := d.cloud.DisksClient.Get(ctx, resourceGroup, diskName); rerr != nil {
-		return rerr.Error()
-	}
-
-	return nil
-}
-
 func (d *DriverV2) checkDiskCapacity(ctx context.Context, resourceGroup, diskName string, requestGiB int) (bool, error) {
-	disk, err := d.cloud.DisksClient.Get(ctx, resourceGroup, diskName)
+	disk, err := d.controllerProvisioner.Cloud.DisksClient.Get(ctx, resourceGroup, diskName)
 	// Because we can not judge the reason of the error. Maybe the disk does not exist.
 	// So here we do not handle the error.
 	if err == nil {
