@@ -147,19 +147,6 @@ func GetValidDiskName(volumeName string) string {
 	return diskName
 }
 
-func checkDiskName(diskName string) bool {
-	length := len(diskName)
-
-	for i, v := range diskName {
-		if !(unicode.IsLetter(v) || unicode.IsDigit(v) || v == '_' || v == '.' || v == '-') ||
-			(i == 0 && !(unicode.IsLetter(v) || unicode.IsDigit(v))) ||
-			(i == length-1 && !(unicode.IsLetter(v) || unicode.IsDigit(v) || v == '_')) {
-			return false
-		}
-	}
-
-	return true
-}
 
 // GetCloudProvider get Azure Cloud Provider
 func GetAzureCloudProvider(kubeClient clientset.Interface) (*azure.Cloud, error) {
@@ -233,4 +220,18 @@ func GetResourceGroupFromAzureManagedDiskURI(diskURI string) (string, error) {
 func IsARMResourceID(resourceID string) bool {
 	id := strings.ToLower(resourceID)
 	return strings.Contains(id, "/subscriptions/")
+}
+
+func checkDiskName(diskName string) bool {
+	length := len(diskName)
+
+	for i, v := range diskName {
+		if !(unicode.IsLetter(v) || unicode.IsDigit(v) || v == '_' || v == '.' || v == '-') ||
+			(i == 0 && !(unicode.IsLetter(v) || unicode.IsDigit(v))) ||
+			(i == length-1 && !(unicode.IsLetter(v) || unicode.IsDigit(v) || v == '_')) {
+			return false
+		}
+	}
+
+	return true
 }
