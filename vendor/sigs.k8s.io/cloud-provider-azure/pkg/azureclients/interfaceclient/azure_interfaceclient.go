@@ -20,11 +20,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2019-06-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2020-07-01/network"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure"
+	"github.com/Azure/go-autorest/autorest/to"
 
 	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/klog/v2"
@@ -39,8 +41,10 @@ var _ Interface = &Client{}
 
 // Client implements network interface client.
 type Client struct {
-	armClient      armclient.Interface
-	subscriptionID string
+	armClient              armclient.Interface
+	subscriptionID         string
+	cloudName              string
+	disableAzureStackCloud bool
 
 	// Rate limiting configures.
 	rateLimiterReader flowcontrol.RateLimiter
@@ -55,7 +59,11 @@ type Client struct {
 func New(config *azclients.ClientConfig) *Client {
 	baseURI := config.ResourceManagerEndpoint
 	authorizer := config.Authorizer
-	armClient := armclient.New(authorizer, baseURI, config.UserAgent, APIVersion, config.Location, config.Backoff)
+	apiVersion := APIVersion
+	if strings.EqualFold(config.CloudName, AzureStackCloudName) && !config.DisableAzureStackCloud {
+		apiVersion = AzureStackCloudAPIVersion
+	}
+	armClient := armclient.New(authorizer, baseURI, config.UserAgent, apiVersion, config.Location, config.Backoff)
 	rateLimiterReader, rateLimiterWriter := azclients.NewRateLimiter(config.RateLimitConfig)
 
 	klog.V(2).Infof("Azure InterfacesClient (read ops) using rate limit config: QPS=%g, bucket=%d",
@@ -66,10 +74,12 @@ func New(config *azclients.ClientConfig) *Client {
 		config.RateLimitConfig.CloudProviderRateLimitBucketWrite)
 
 	client := &Client{
-		armClient:         armClient,
-		rateLimiterReader: rateLimiterReader,
-		rateLimiterWriter: rateLimiterWriter,
-		subscriptionID:    config.SubscriptionID,
+		armClient:              armClient,
+		rateLimiterReader:      rateLimiterReader,
+		rateLimiterWriter:      rateLimiterWriter,
+		subscriptionID:         config.SubscriptionID,
+		cloudName:              config.CloudName,
+		disableAzureStackCloud: config.DisableAzureStackCloud,
 	}
 
 	return client
@@ -178,8 +188,12 @@ func (c *Client) getVMSSNetworkInterface(ctx context.Context, resourceGroupName 
 	)
 
 	result := network.Interface{}
+	computeAPIVersion := ComputeAPIVersion
+	if strings.EqualFold(c.cloudName, AzureStackCloudName) && !c.disableAzureStackCloud {
+		computeAPIVersion = AzureStackComputeAPIVersion
+	}
 	queryParameters := map[string]interface{}{
-		"api-version": ComputeAPIVersion,
+		"api-version": computeAPIVersion,
 	}
 	if len(expand) > 0 {
 		queryParameters["$expand"] = autorest.Encode("query", expand)
@@ -246,7 +260,15 @@ func (c *Client) createOrUpdateInterface(ctx context.Context, resourceGroupName 
 		"Microsoft.Network/networkInterfaces",
 		networkInterfaceName,
 	)
-	response, rerr := c.armClient.PutResource(ctx, resourceID, parameters)
+	decorators := []autorest.PrepareDecorator{
+		autorest.WithPathParameters("{resourceID}", map[string]interface{}{"resourceID": resourceID}),
+		autorest.WithJSON(parameters),
+	}
+	if to.String(parameters.Etag) != "" {
+		decorators = append(decorators, autorest.WithHeader("If-Match", autorest.String(to.String(parameters.Etag))))
+	}
+
+	response, rerr := c.armClient.PutResourceWithDecorators(ctx, resourceID, parameters, decorators)
 	defer c.armClient.CloseResponse(ctx, response)
 	if rerr != nil {
 		klog.V(5).Infof("Received error in %s: resourceID: %s, error: %s", "nic.put.request", resourceID, rerr.Error())

@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-30/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/Azure/go-autorest/autorest/to"
@@ -43,6 +43,7 @@ var _ Interface = &Client{}
 type Client struct {
 	armClient      armclient.Interface
 	subscriptionID string
+	cloudName      string
 
 	// Rate limiting configures.
 	rateLimiterReader flowcontrol.RateLimiter
@@ -58,7 +59,7 @@ func New(config *azclients.ClientConfig) *Client {
 	baseURI := config.ResourceManagerEndpoint
 	authorizer := config.Authorizer
 	apiVersion := APIVersion
-	if strings.EqualFold(config.CloudName, AzureStackCloudName) {
+	if strings.EqualFold(config.CloudName, AzureStackCloudName) && !config.DisableAzureStackCloud {
 		apiVersion = AzureStackCloudAPIVersion
 	}
 	armClient := armclient.New(authorizer, baseURI, config.UserAgent, apiVersion, config.Location, config.Backoff)
@@ -76,6 +77,7 @@ func New(config *azclients.ClientConfig) *Client {
 		rateLimiterReader: rateLimiterReader,
 		rateLimiterWriter: rateLimiterWriter,
 		subscriptionID:    config.SubscriptionID,
+		cloudName:         config.CloudName,
 	}
 
 	return client

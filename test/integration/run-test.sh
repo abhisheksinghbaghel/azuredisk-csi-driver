@@ -42,7 +42,11 @@ fi
 echo "Begin to run integration test on $cloud..."
 
 # Run CSI driver as a background service
-_output/azurediskplugin --endpoint "$endpoint" --nodeid "$node" -v=5 &
+if [[ $# -lt 4 || "$4" != "v2" ]]; then
+  _output/azurediskplugin --endpoint "$endpoint" --nodeid "$node" -v=5 &
+else
+  _output/azurediskpluginv2 --endpoint "$endpoint" --nodeid "$node" -v=5 --temp-use-driver-v2 &
+fi
 trap cleanup EXIT
 
 if [[ "$cloud" == 'AzureChinaCloud' ]]; then
@@ -62,6 +66,9 @@ readonly volumeid=$(echo "$value" | awk '{print $1}' | sed 's/"//g')
 echo "Got volume id: $volumeid"
 
 "$CSC_BIN" controller validate-volume-capabilities --endpoint "$endpoint" --cap 1,block "$volumeid"
+
+echo 'Expand volume test'
+"$CSC_BIN" controller expand-volume --endpoint "$endpoint" --req-bytes 21474836480 --cap 1,block "$volumeid"
 
 echo 'Attach volume test:'
 "$CSC_BIN" controller publish --endpoint "$endpoint" --node-id "$node" --cap 1,block "$volumeid"

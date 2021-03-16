@@ -384,7 +384,7 @@ func (t *TestPersistentVolumeClaim) DeleteBoundPersistentVolume() {
 	framework.ExpectNoError(err)
 }
 
-func (t *TestPersistentVolumeClaim) DeleteBackingVolume(driver *azuredisk.Driver) {
+func (t *TestPersistentVolumeClaim) DeleteBackingVolume(driver azuredisk.CSIDriver) {
 	volumeID := t.persistentVolume.Spec.CSI.VolumeHandle
 	ginkgo.By(fmt.Sprintf("deleting azuredisk volume %q", volumeID))
 	req := &csi.DeleteVolumeRequest{
@@ -546,8 +546,8 @@ func NewTestStatefulset(c clientset.Interface, ns *v1.Namespace, command string,
 	generateName := "azuredisk-volume-tester-"
 	selectorValue := fmt.Sprintf("%s%d", generateName, rand.Int())
 	replicas := int32(1)
-	var volumeClainTest []v1.PersistentVolumeClaim
-	volumeClainTest = append(volumeClainTest, *pvc)
+	var volumeClaimTest []v1.PersistentVolumeClaim
+	volumeClaimTest = append(volumeClaimTest, *pvc)
 	testStatefulset := &TestStatefulset{
 		client:    c,
 		namespace: ns,
@@ -584,7 +584,7 @@ func NewTestStatefulset(c clientset.Interface, ns *v1.Namespace, command string,
 						RestartPolicy: v1.RestartPolicyAlways,
 					},
 				},
-				VolumeClaimTemplates: volumeClainTest,
+				VolumeClaimTemplates: volumeClaimTest,
 			},
 		},
 	}
@@ -816,6 +816,28 @@ func (t *TestPod) SetupRawBlockVolume(pvc *v1.PersistentVolumeClaim, name, devic
 
 func (t *TestPod) SetNodeSelector(nodeSelector map[string]string) {
 	t.pod.Spec.NodeSelector = nodeSelector
+}
+
+func (t *TestPod) ListNodes() []string {
+	var err error
+	var nodes *v1.NodeList
+	var nodeNames []string
+	nodes, err = t.client.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
+	framework.ExpectNoError(err)
+	for _, item := range nodes.Items {
+		nodeNames = append(nodeNames, item.ObjectMeta.Name)
+	}
+	return nodeNames
+}
+
+func (t *TestPod) SetNodeUnschedulable(nodeName string, unschedulable bool) {
+	var err error
+	var node *v1.Node
+	node, err = t.client.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
+	framework.ExpectNoError(err)
+	node.Spec.Unschedulable = unschedulable
+	_, err = t.client.CoreV1().Nodes().Update(context.TODO(), node, metav1.UpdateOptions{})
+	framework.ExpectNoError(err)
 }
 
 func (t *TestPod) Cleanup() {

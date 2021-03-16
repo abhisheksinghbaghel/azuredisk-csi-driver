@@ -20,9 +20,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-30/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/Azure/go-autorest/autorest/to"
@@ -42,6 +43,7 @@ var _ Interface = &Client{}
 type Client struct {
 	armClient      armclient.Interface
 	subscriptionID string
+	cloudName      string
 
 	// Rate limiting configures.
 	rateLimiterReader flowcontrol.RateLimiter
@@ -56,7 +58,11 @@ type Client struct {
 func New(config *azclients.ClientConfig) *Client {
 	baseURI := config.ResourceManagerEndpoint
 	authorizer := config.Authorizer
-	armClient := armclient.New(authorizer, baseURI, config.UserAgent, APIVersion, config.Location, config.Backoff)
+	apiVersion := APIVersion
+	if strings.EqualFold(config.CloudName, AzureStackCloudName) && !config.DisableAzureStackCloud {
+		apiVersion = AzureStackCloudAPIVersion
+	}
+	armClient := armclient.New(authorizer, baseURI, config.UserAgent, apiVersion, config.Location, config.Backoff)
 	rateLimiterReader, rateLimiterWriter := azclients.NewRateLimiter(config.RateLimitConfig)
 
 	klog.V(2).Infof("Azure SnapshotClient (read ops) using rate limit config: QPS=%g, bucket=%d",
@@ -71,6 +77,7 @@ func New(config *azclients.ClientConfig) *Client {
 		rateLimiterReader: rateLimiterReader,
 		rateLimiterWriter: rateLimiterWriter,
 		subscriptionID:    config.SubscriptionID,
+		cloudName:         config.CloudName,
 	}
 
 	return client

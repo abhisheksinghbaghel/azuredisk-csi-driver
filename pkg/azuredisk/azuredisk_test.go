@@ -27,13 +27,16 @@ import (
 
 	"google.golang.org/grpc/status"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-30/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 
-	"sigs.k8s.io/azuredisk-csi-driver/pkg/util"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/diskclient/mockdiskclient"
 	azure "sigs.k8s.io/cloud-provider-azure/pkg/provider"
+)
+
+var (
+	KubeConfigFileEnvVar = "KUBECONFIG"
 )
 
 func TestGetDiskName(t *testing.T) {
@@ -593,17 +596,6 @@ func TestIsCorruptedDir(t *testing.T) {
 	}
 }
 
-func TestNewDriver(t *testing.T) {
-	nodeid := "test"
-	driver := Driver{}
-	driver.Name = DriverName
-	driver.Version = driverVersion
-	driver.NodeID = nodeid
-	driver.volumeLocks = util.NewVolumeLocks()
-	newdriver := NewDriver(nodeid)
-	assert.Equal(t, driver, *newdriver)
-}
-
 func TestCheckDiskExists(t *testing.T) {
 	diskName := "-"
 	assert.Equal(t, false, checkDiskName(diskName))
@@ -621,7 +613,7 @@ func TestCheckDiskCapacity(t *testing.T) {
 			DiskSizeGB: &size,
 		},
 	}
-	d.cloud.DisksClient.(*mockdiskclient.MockInterface).EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any()).Return(disk, nil).AnyTimes()
+	d.getCloud().DisksClient.(*mockdiskclient.MockInterface).EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any()).Return(disk, nil).AnyTimes()
 	flag, err := d.checkDiskCapacity(context.TODO(), resourceGroup, diskName, 10)
 	assert.Equal(t, flag, true)
 	assert.Nil(t, err)
@@ -643,6 +635,26 @@ func TestRun(t *testing.T) {
     "resourceGroup": "rg1",
     "location": "loc"
 }`
+
+	validKubeConfigPath := "valid-Kube-Config-Path"
+	validKubeConfigContent := `
+    apiVersion: v1
+    clusters:
+    - cluster:
+        server: https://foo-cluster-dns-57e0bda1.hcp.westus2.azmk8s.io:443
+      name: foo-cluster
+    contexts:
+    - context:
+        cluster: foo-cluster
+        user: clusterUser_abhib-resources_foo-cluster
+      name: foo-cluster
+    current-context: foo-cluster
+    kind: Config
+    preferences: {}
+    users:
+    - name: clusterUser_abhib-resources_foo-cluster
+      user:
+`
 
 	testCases := []struct {
 		name     string
@@ -669,6 +681,14 @@ func TestRun(t *testing.T) {
 				}
 				os.Setenv(DefaultAzureCredentialFileEnv, fakeCredFile)
 
+				existingConfigPath, err := createConfigFileAndSetEnv(validKubeConfigPath, validKubeConfigContent, KubeConfigFileEnvVar)
+				if len(existingConfigPath) > 0 {
+					defer cleanConfigAndRestoreEnv(validKubeConfigPath, KubeConfigFileEnvVar, existingConfigPath)
+				}
+				if err != nil {
+					t.Error(err)
+				}
+
 				d, _ := NewFakeDriver(t)
 				d.Run("tcp://127.0.0.1:0", "", true)
 			},
@@ -694,9 +714,17 @@ func TestRun(t *testing.T) {
 				}
 				os.Setenv(DefaultAzureCredentialFileEnv, fakeCredFile)
 
+				existingConfigPath, err := createConfigFileAndSetEnv(validKubeConfigPath, validKubeConfigContent, KubeConfigFileEnvVar)
+				if len(existingConfigPath) > 0 {
+					defer cleanConfigAndRestoreEnv(validKubeConfigPath, KubeConfigFileEnvVar, existingConfigPath)
+				}
+				if err != nil {
+					t.Error(err)
+				}
+
 				d, _ := NewFakeDriver(t)
-				d.cloud = &azure.Cloud{}
-				d.NodeID = ""
+				d.setCloud(&azure.Cloud{})
+				d.setNodeID("")
 				d.Run("tcp://127.0.0.1:0", "", true)
 			},
 		},
@@ -705,4 +733,33 @@ func TestRun(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, tc.testFunc)
 	}
+}
+
+func createConfigFileAndSetEnv(path string, content string, envVariableName string) (string, error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	if err != nil {
+		return "", err
+	}
+
+	if err := ioutil.WriteFile(path, []byte(content), 0666); err != nil {
+		return "", err
+	}
+
+	envValue, _ := os.LookupEnv(envVariableName)
+	err = os.Setenv(envVariableName, path)
+	if err != nil {
+		return "", fmt.Errorf("Failed to set env variable")
+	}
+
+	return envValue, err
+}
+
+func cleanConfigAndRestoreEnv(path string, envVariableName string, envValue string) {
+	defer os.Setenv(envVariableName, envValue)
+	os.Remove(path)
 }

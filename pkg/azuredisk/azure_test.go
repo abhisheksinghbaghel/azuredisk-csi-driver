@@ -17,12 +17,13 @@ limitations under the License.
 package azuredisk
 
 import (
-	"fmt"
 	"io/ioutil"
 	"os"
 	"reflect"
 	"runtime"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func skipIfTestingOnWindows(t *testing.T) {
@@ -31,12 +32,12 @@ func skipIfTestingOnWindows(t *testing.T) {
 	}
 }
 
-func TestGetCloudProvider(t *testing.T) {
+func TestGetKubeConfig(t *testing.T) {
 	// skip for now as this is very flaky on Windows
 	skipIfTestingOnWindows(t)
-	fakeCredFile := "fake-cred-file.json"
-	fakeKubeConfig := "fake-kube-config"
-	emptyKubeConfig := "empty-kube-config"
+	kubeConfigEnvVariable := "KUBECONFIG"
+	emptyKubeConfig := "empty-Kube-Config"
+	validKubeConfig := "valid-Kube-Config"
 	fakeContent := `
 apiVersion: v1
 clusters:
@@ -72,31 +73,112 @@ users:
 		}
 	}()
 
+	err = createTestFile(validKubeConfig)
+	if err != nil {
+		t.Error(err)
+	}
+	defer func() {
+		if err := os.Remove(validKubeConfig); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	if err := ioutil.WriteFile(validKubeConfig, []byte(fakeContent), 0666); err != nil {
+		t.Error(err)
+	}
+
+	tests := []struct {
+		desc                     string
+		kubeconfig               string
+		expectError              bool
+		envVariableHasConfig     bool
+		envVariableConfigIsValid bool
+	}{
+		{
+			desc:                     "[success] valid kube config passed",
+			kubeconfig:               validKubeConfig,
+			expectError:              false,
+			envVariableHasConfig:     false,
+			envVariableConfigIsValid: false,
+		},
+		{
+			desc:                     "[failure] invalid kube config passed",
+			kubeconfig:               emptyKubeConfig,
+			expectError:              true,
+			envVariableHasConfig:     false,
+			envVariableConfigIsValid: false,
+		},
+		{
+			desc:                     "[failure] no config passed, invalid config in env.",
+			kubeconfig:               "",
+			expectError:              true,
+			envVariableHasConfig:     true,
+			envVariableConfigIsValid: false,
+		},
+		{
+			desc:                     "[success] no config passed, valid config in env.",
+			kubeconfig:               "",
+			expectError:              false,
+			envVariableHasConfig:     true,
+			envVariableConfigIsValid: true,
+		},
+	}
+
+	kubeConfigPathInEnv, ok := os.LookupEnv(kubeConfigEnvVariable)
+	if ok {
+		defer func() {
+			if err := os.Setenv(kubeConfigEnvVariable, kubeConfigPathInEnv); err != nil {
+				t.Error(ok)
+			}
+		}()
+	}
+
+	for _, test := range tests {
+		if test.envVariableHasConfig {
+			if test.envVariableConfigIsValid {
+				if err := os.Setenv(kubeConfigEnvVariable, validKubeConfig); err != nil {
+					t.Error(ok)
+				}
+			} else {
+				if err := os.Setenv(kubeConfigEnvVariable, emptyKubeConfig); err != nil {
+					t.Error(ok)
+				}
+			}
+
+		} else {
+			if err := os.Setenv(kubeConfigEnvVariable, ""); err != nil {
+				t.Error(ok)
+			}
+		}
+		_, err := GetKubeConfig(test.kubeconfig)
+		receiveError := (err != nil)
+		if test.expectError != receiveError {
+			t.Errorf("desc: %s,\n input: %q, GetCloudProvider err: %v, expectErr: %v", test.desc, test.kubeconfig, err, test.expectError)
+		}
+	}
+}
+
+func TestGetCloudProvider(t *testing.T) {
+	// skip for now as this is very flaky on Windows
+	skipIfTestingOnWindows(t)
+	fakeCredFile := "fake-cred-file.json"
+	emptyKubeConfig := "empty-kube-config"
+
+	err := createTestFile(emptyKubeConfig)
+	if err != nil {
+		t.Error(err)
+	}
+	defer func() {
+		if err := os.Remove(emptyKubeConfig); err != nil {
+			t.Error(err)
+		}
+	}()
+
 	tests := []struct {
 		desc        string
 		kubeconfig  string
 		expectedErr error
 	}{
-		{
-			desc:        "[failure] out of cluster, no kubeconfig, no credential file",
-			kubeconfig:  "",
-			expectedErr: fmt.Errorf("Failed to load config from file: %s, cloud not get azure cloud provider", DefaultCredFilePathLinux),
-		},
-		{
-			desc:        "[failure] out of cluster & in cluster, specify a non-exist kubeconfig, no credential file",
-			kubeconfig:  "/tmp/non-exist.json",
-			expectedErr: fmt.Errorf("Failed to load config from file: %s, cloud not get azure cloud provider", DefaultCredFilePathLinux),
-		},
-		{
-			desc:        "[failure] out of cluster & in cluster, specify a empty kubeconfig, no credential file",
-			kubeconfig:  emptyKubeConfig,
-			expectedErr: fmt.Errorf("failed to get KubeClient: invalid configuration: no configuration has been provided, try setting KUBERNETES_MASTER environment variable"),
-		},
-		{
-			desc:        "[failure] out of cluster & in cluster, specify a fake kubeconfig, no credential file",
-			kubeconfig:  fakeKubeConfig,
-			expectedErr: fmt.Errorf("Failed to load config from file: %s, cloud not get azure cloud provider", DefaultCredFilePathLinux),
-		},
 		{
 			desc:        "[success] out of cluster & in cluster, no kubeconfig, a fake credential file",
 			kubeconfig:  "",
@@ -105,21 +187,6 @@ users:
 	}
 
 	for _, test := range tests {
-		if test.desc == "[failure] out of cluster & in cluster, specify a fake kubeconfig, no credential file" {
-			err := createTestFile(fakeKubeConfig)
-			if err != nil {
-				t.Error(err)
-			}
-			defer func() {
-				if err := os.Remove(fakeKubeConfig); err != nil {
-					t.Error(err)
-				}
-			}()
-
-			if err := ioutil.WriteFile(fakeKubeConfig, []byte(fakeContent), 0666); err != nil {
-				t.Error(err)
-			}
-		}
 		if test.desc == "[success] out of cluster & in cluster, no kubeconfig, a fake credential file" {
 			err := createTestFile(fakeCredFile)
 			if err != nil {
@@ -139,7 +206,7 @@ users:
 			}
 			os.Setenv(DefaultAzureCredentialFileEnv, fakeCredFile)
 		}
-		_, err := GetCloudProvider(test.kubeconfig)
+		_, err := GetCloudProvider(nil)
 		if !reflect.DeepEqual(err, test.expectedErr) {
 			t.Errorf("desc: %s,\n input: %q, GetCloudProvider err: %v, expectedErr: %v", test.desc, test.kubeconfig, err, test.expectedErr)
 		}
@@ -154,4 +221,38 @@ func createTestFile(path string) error {
 	defer f.Close()
 
 	return nil
+}
+
+func TestIsAzureStackCloud(t *testing.T) {
+	tests := []struct {
+		cloud                  string
+		disableAzureStackCloud bool
+		expectedResult         bool
+	}{
+		{
+			cloud:                  "AzurePublicCloud",
+			disableAzureStackCloud: false,
+			expectedResult:         false,
+		},
+		{
+			cloud:                  "",
+			disableAzureStackCloud: true,
+			expectedResult:         false,
+		},
+		{
+			cloud:                  azureStackCloud,
+			disableAzureStackCloud: false,
+			expectedResult:         true,
+		},
+		{
+			cloud:                  azureStackCloud,
+			disableAzureStackCloud: true,
+			expectedResult:         false,
+		},
+	}
+
+	for i, test := range tests {
+		result := IsAzureStackCloud(test.cloud, test.disableAzureStackCloud)
+		assert.Equal(t, test.expectedResult, result, "TestCase[%d]", i)
+	}
 }

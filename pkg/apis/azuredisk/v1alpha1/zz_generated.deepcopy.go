@@ -48,7 +48,11 @@ func (in *AzDriverNode) DeepCopyInto(out *AzDriverNode) {
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
 	out.Spec = in.Spec
-	in.Status.DeepCopyInto(&out.Status)
+	if in.Status != nil {
+		in, out := &in.Status, &out.Status
+		*out = new(AzDriverNodeStatus)
+		(*in).DeepCopyInto(*out)
+	}
 	return
 }
 

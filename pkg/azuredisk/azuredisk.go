@@ -24,13 +24,14 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-30/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/pborman/uuid"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/volume/util"
 	"k8s.io/mount-utils"
@@ -38,12 +39,15 @@ import (
 	csicommon "sigs.k8s.io/azuredisk-csi-driver/pkg/csi-common"
 	"sigs.k8s.io/azuredisk-csi-driver/pkg/mounter"
 	volumehelper "sigs.k8s.io/azuredisk-csi-driver/pkg/util"
+	"sigs.k8s.io/cloud-provider-azure/pkg/provider"
 	azure "sigs.k8s.io/cloud-provider-azure/pkg/provider"
 )
 
 const (
 	// DriverName driver name
-	DriverName = "disk.csi.azure.com"
+	DriverName       = "disk.csi.azure.com"
+	azurePublicCloud = "AZUREPUBLICCLOUD"
+	azureStackCloud  = "AZURESTACKCLOUD"
 
 	errDiskNotFound = "not found"
 	// default IOPS Caps & Throughput Cap (MBps) per https://docs.microsoft.com/en-us/azure/virtual-machines/linux/disks-ultra-ssd
@@ -92,17 +96,31 @@ var (
 	diskURISupportedManaged = []string{"/subscriptions/{sub-id}/resourcegroups/{group-name}/providers/microsoft.compute/disks/{disk-id}"}
 )
 
-// Driver implements all interfaces of CSI drivers
-type Driver struct {
+// CSIDriver defines the interface for a CSI driver.
+type CSIDriver interface {
+	csi.ControllerServer
+	csi.NodeServer
+	csi.IdentityServer
+
+	Run(endpoint, kubeconfig string, testMode bool)
+}
+
+// DriverCore contains fields common to both the V1 and V2 driver, and implements all interfaces of CSI drivers
+type DriverCore struct {
 	csicommon.CSIDriver
-	cloud       *azure.Cloud
+	cloud *azure.Cloud
+}
+
+// Driver is the v1 implementation of the Azure Disk CSI Driver.
+type Driver struct {
+	DriverCore
 	mounter     *mount.SafeFormatAndMount
 	volumeLocks *volumehelper.VolumeLocks
 }
 
-// NewDriver Creates a NewCSIDriver object. Assumes vendor version is equal to driver version &
+// newDriverV1 Creates a NewCSIDriver object. Assumes vendor version is equal to driver version &
 // does not support optional driver plugin info manifest field. Refer to CSI spec for more details.
-func NewDriver(nodeID string) *Driver {
+func newDriverV1(nodeID string) *Driver {
 	driver := Driver{}
 	driver.Name = DriverName
 	driver.Version = driverVersion
@@ -118,7 +136,18 @@ func (d *Driver) Run(endpoint, kubeconfig string, testBool bool) {
 		klog.Fatalf("%v", err)
 	}
 	klog.Infof("\nDRIVER INFORMATION:\n-------------------\n%s\n\nStreaming logs below:", versionMeta)
-	cloud, err := GetCloudProvider(kubeconfig)
+
+	config, err := GetKubeConfig(kubeconfig)
+	if err != nil || config == nil {
+		klog.Fatalf("failed to get kube config, error: %v", err)
+	}
+
+	kubeClient, err := clientset.NewForConfig(config)
+	if err != nil || kubeClient == nil {
+		klog.Fatalf("failed to get kubeclient with kubeconfig (%s), error: %v", kubeconfig, err)
+	}
+
+	cloud, err := GetCloudProvider(kubeClient)
 	if err != nil || cloud.TenantID == "" || cloud.SubscriptionID == "" {
 		klog.Fatalf("failed to get Azure Cloud Provider, error: %v", err)
 	}
@@ -160,6 +189,7 @@ func (d *Driver) Run(endpoint, kubeconfig string, testBool bool) {
 	s.Wait()
 }
 
+// GetDiskName returns disk name from disk URI
 func GetDiskName(diskURI string) (string, error) {
 	matches := managedDiskPathRE.FindStringSubmatch(diskURI)
 	if len(matches) != 2 {
@@ -176,6 +206,7 @@ func getSnapshotName(snapshotURI string) (string, error) {
 	return matches[1], nil
 }
 
+// GetResourceGroupFromURI returns resource groupd from URI
 func GetResourceGroupFromURI(diskURI string) (string, error) {
 	fields := strings.Split(diskURI, "/")
 	if len(fields) != 9 || strings.ToLower(fields[3]) != "resourcegroups" {
@@ -318,8 +349,44 @@ func isAvailabilityZone(zone, region string) bool {
 	return strings.HasPrefix(zone, fmt.Sprintf("%s-", region))
 }
 
+// IsCorruptedDir checks if the dir is corrupted
 func IsCorruptedDir(dir string) bool {
 	_, pathErr := mount.PathExists(dir)
 	fmt.Printf("IsCorruptedDir(%s) returned with error: %v", dir, pathErr)
 	return pathErr != nil && mount.IsCorruptedMnt(pathErr)
+}
+
+// setControllerCapabilities sets the controller capabilities field. It is intended for use with unit tests.
+func (d *DriverCore) setControllerCapabilities(caps []*csi.ControllerServiceCapability) {
+	d.Cap = caps
+}
+
+// setNodeCapabilities sets the node capabilities field. It is intended for use with unit tests.
+func (d *DriverCore) setNodeCapabilities(nodeCaps []*csi.NodeServiceCapability) {
+	d.NSCap = nodeCaps
+}
+
+// setName sets the Name field. It is intended for use with unit tests.
+func (d *DriverCore) setName(name string) {
+	d.Name = name
+}
+
+// setName sets the NodeId field. It is intended for use with unit tests.
+func (d *DriverCore) setNodeID(nodeID string) {
+	d.NodeID = nodeID
+}
+
+// setName sets the Version field. It is intended for use with unit tests.
+func (d *DriverCore) setVersion(version string) {
+	d.Version = version
+}
+
+// getCloud returns the value of the cloud field. It is intended for use with unit tests.
+func (d *DriverCore) getCloud() *provider.Cloud {
+	return d.cloud
+}
+
+// setCloud sets the cloud field. It is intended for use with unit tests.
+func (d *DriverCore) setCloud(cloud *provider.Cloud) {
+	d.cloud = cloud
 }

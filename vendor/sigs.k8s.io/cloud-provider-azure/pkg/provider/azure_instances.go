@@ -14,10 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package azure
+package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -190,7 +191,7 @@ func (az *Cloud) InstanceExistsByProviderID(ctx context.Context, providerID stri
 
 	name, err := az.VMSet.GetNodeNameByProviderID(providerID)
 	if err != nil {
-		if err == cloudprovider.InstanceNotFound {
+		if errors.Is(err, cloudprovider.InstanceNotFound) {
 			return false, nil
 		}
 		return false, err
@@ -198,13 +199,32 @@ func (az *Cloud) InstanceExistsByProviderID(ctx context.Context, providerID stri
 
 	_, err = az.InstanceID(ctx, name)
 	if err != nil {
-		if err == cloudprovider.InstanceNotFound {
+		if errors.Is(err, cloudprovider.InstanceNotFound) {
 			return false, nil
 		}
 		return false, err
 	}
 
 	return true, nil
+}
+
+// InstanceExists returns true if the instance for the given node exists according to the cloud provider.
+// Use the node.name or node.spec.providerID field to find the node in the cloud provider.
+func (az *Cloud) InstanceExists(ctx context.Context, node *v1.Node) (bool, error) {
+	if node == nil {
+		return false, nil
+	}
+	providerID := node.Spec.ProviderID
+	if providerID == "" {
+		var err error
+		providerID, err = az.getNodeProviderIDByNodeName(ctx, types.NodeName(node.Name))
+		if err != nil {
+			klog.Errorf("InstanceExists: failed to get the provider ID by node name %s: %v", node.Name, err)
+			return false, err
+		}
+	}
+
+	return az.InstanceExistsByProviderID(ctx, providerID)
 }
 
 // InstanceShutdownByProviderID returns true if the instance is in safe state to detach volumes
@@ -216,7 +236,7 @@ func (az *Cloud) InstanceShutdownByProviderID(ctx context.Context, providerID st
 	nodeName, err := az.VMSet.GetNodeNameByProviderID(providerID)
 	if err != nil {
 		// Returns false, so the controller manager will continue to check InstanceExistsByProviderID().
-		if err == cloudprovider.InstanceNotFound {
+		if errors.Is(err, cloudprovider.InstanceNotFound) {
 			return false, nil
 		}
 
@@ -226,7 +246,7 @@ func (az *Cloud) InstanceShutdownByProviderID(ctx context.Context, providerID st
 	powerStatus, err := az.VMSet.GetPowerStatusByNodeName(string(nodeName))
 	if err != nil {
 		// Returns false, so the controller manager will continue to check InstanceExistsByProviderID().
-		if err == cloudprovider.InstanceNotFound {
+		if errors.Is(err, cloudprovider.InstanceNotFound) {
 			return false, nil
 		}
 
@@ -236,6 +256,25 @@ func (az *Cloud) InstanceShutdownByProviderID(ctx context.Context, providerID st
 
 	status := strings.ToLower(powerStatus)
 	return status == vmPowerStateStopped || status == vmPowerStateDeallocated || status == vmPowerStateDeallocating, nil
+}
+
+// InstanceShutdown returns true if the instance is shutdown according to the cloud provider.
+// Use the node.name or node.spec.providerID field to find the node in the cloud provider.
+func (az *Cloud) InstanceShutdown(ctx context.Context, node *v1.Node) (bool, error) {
+	if node == nil {
+		return false, nil
+	}
+	providerID := node.Spec.ProviderID
+	if providerID == "" {
+		var err error
+		providerID, err = az.getNodeProviderIDByNodeName(ctx, types.NodeName(node.Name))
+		if err != nil {
+			klog.Errorf("InstanceShutdown: failed to get the provider ID by node name %s: %v", node.Name, err)
+			return false, err
+		}
+	}
+
+	return az.InstanceShutdownByProviderID(ctx, providerID)
 }
 
 func (az *Cloud) isCurrentInstance(name types.NodeName, metadataVMName string) (bool, error) {
@@ -304,6 +343,15 @@ func (az *Cloud) InstanceID(ctx context.Context, name types.NodeName) (string, e
 	return az.VMSet.GetInstanceIDByNodeName(nodeName)
 }
 
+func (az *Cloud) getNodeProviderIDByNodeName(ctx context.Context, name types.NodeName) (string, error) {
+	providerID, err := cloudprovider.GetInstanceProviderID(ctx, az, name)
+	if err != nil {
+		return "", fmt.Errorf("failed to get the provider ID of the node %s: %w", string(name), err)
+	}
+
+	return providerID, nil
+}
+
 func (az *Cloud) getLocalInstanceProviderID(metadata *InstanceMetadata, nodeName string) (string, error) {
 	// Get resource group name and subscription ID.
 	resourceGroup := strings.ToLower(metadata.Compute.ResourceGroup)
@@ -317,7 +365,7 @@ func (az *Cloud) getLocalInstanceProviderID(metadata *InstanceMetadata, nodeName
 	// Get scale set name and instanceID from vmName for vmss.
 	ssName, instanceID, err := extractVmssVMName(metadata.Compute.Name)
 	if err != nil {
-		if err == ErrorNotVmssInstance {
+		if errors.Is(err, ErrorNotVmssInstance) {
 			// Compose machineID for standard Node.
 			return az.getStandardMachineID(subscriptionID, resourceGroup, nodeName), nil
 		}
@@ -405,6 +453,52 @@ func (az *Cloud) AddSSHKeyToAllInstances(ctx context.Context, user string, keyDa
 // On Azure this is the hostname, so we just return the hostname.
 func (az *Cloud) CurrentNodeName(ctx context.Context, hostname string) (types.NodeName, error) {
 	return types.NodeName(hostname), nil
+}
+
+// InstanceMetadata returns the instance's metadata. The values returned in InstanceMetadata are
+// translated into specific fields in the Node object on registration.
+// Use the node.name or node.spec.providerID field to find the node in the cloud provider.
+func (az *Cloud) InstanceMetadata(ctx context.Context, node *v1.Node) (*cloudprovider.InstanceMetadata, error) {
+	if node == nil {
+		return &cloudprovider.InstanceMetadata{}, nil
+	}
+
+	meta := cloudprovider.InstanceMetadata{}
+
+	if node.Spec.ProviderID != "" {
+		meta.ProviderID = node.Spec.ProviderID
+	} else {
+		providerID, err := az.getNodeProviderIDByNodeName(ctx, types.NodeName(node.Name))
+		if err != nil {
+			klog.Errorf("InstanceMetadata: failed to get the provider ID by node name %s: %v", node.Name, err)
+			return nil, err
+		}
+		meta.ProviderID = providerID
+	}
+
+	instanceType, err := az.InstanceType(ctx, types.NodeName(node.Name))
+	if err != nil {
+		klog.Errorf("InstanceMetadata: failed to get the instance type of %s: %v", node.Name, err)
+		return &cloudprovider.InstanceMetadata{}, err
+	}
+	meta.InstanceType = instanceType
+
+	nodeAddresses, err := az.NodeAddresses(ctx, types.NodeName(node.Name))
+	if err != nil {
+		klog.Errorf("InstanceMetadata: failed to get the node address of %s: %v", node.Name, err)
+		return &cloudprovider.InstanceMetadata{}, err
+	}
+	meta.NodeAddresses = nodeAddresses
+
+	zone, err := az.GetZoneByNodeName(ctx, types.NodeName(node.Name))
+	if err != nil {
+		klog.Errorf("InstanceMetadata: failed to get the node zone of %s: %v", node.Name, err)
+		return &cloudprovider.InstanceMetadata{}, err
+	}
+	meta.Zone = zone.FailureDomain
+	meta.Region = zone.Region
+
+	return &meta, nil
 }
 
 // mapNodeNameToVMName maps a k8s NodeName to an Azure VM Name

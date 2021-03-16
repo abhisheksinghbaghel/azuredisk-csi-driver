@@ -19,13 +19,17 @@ package vmsizeclient
 import (
 	"context"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-30/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
 	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
 )
 
 const (
 	// APIVersion is the API version for compute.
 	APIVersion = "2019-07-01"
+	// AzureStackCloudAPIVersion is the API version for Azure Stack
+	AzureStackCloudAPIVersion = "2017-12-01"
+	// AzureStackCloudName is the cloud name of Azure Stack
+	AzureStackCloudName = "AZURESTACKCLOUD"
 )
 
 // Interface is the client interface for VirtualMachineSizes.

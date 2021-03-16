@@ -17,14 +17,18 @@ limitations under the License.
 package azuredisk
 
 import (
+	"context"
 	"testing"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/golang/mock/gomock"
+	"k8s.io/klog/v2"
+	testingexec "k8s.io/utils/exec/testing"
 
 	csicommon "sigs.k8s.io/azuredisk-csi-driver/pkg/csi-common"
 	"sigs.k8s.io/azuredisk-csi-driver/pkg/mounter"
 	volumehelper "sigs.k8s.io/azuredisk-csi-driver/pkg/util"
+	"sigs.k8s.io/cloud-provider-azure/pkg/provider"
 	azure "sigs.k8s.io/cloud-provider-azure/pkg/provider"
 )
 
@@ -52,8 +56,35 @@ var (
 	}
 )
 
-func NewFakeDriver(t *testing.T) (*Driver, error) {
-	driver := Driver{}
+// FakeDriver defines an interface unit tests use to test either the v1 or v2 implementation of the Azure Disk CSI Driver.
+type FakeDriver interface {
+	CSIDriver
+
+	GetSourceDiskSize(ctx context.Context, resourceGroup, diskName string, curDepth, maxDepth int) (*int32, error)
+
+	setNextCommandOutputScripts(scripts ...testingexec.FakeAction)
+	setIsBlockDevicePathError(string, bool, error)
+
+	setControllerCapabilities([]*csi.ControllerServiceCapability)
+	setNodeCapabilities([]*csi.NodeServiceCapability)
+	setName(string)
+	setNodeID(string)
+	setVersion(version string)
+	getCloud() *provider.Cloud
+	setCloud(*provider.Cloud)
+
+	checkDiskCapacity(context.Context, string, string, int) (bool, error)
+	getSnapshotInfo(string) (string, string, error)
+	getSnapshotByID(context.Context, string, string, string) (*csi.Snapshot, error)
+	ensureMountPoint(string) (bool, error)
+}
+
+type fakeDriverV1 struct {
+	Driver
+}
+
+func newFakeDriverV1(t *testing.T) (*fakeDriverV1, error) {
+	driver := fakeDriverV1{}
 	driver.Name = fakeDriverName
 	driver.Version = fakeDriverVersion
 	driver.NodeID = fakeNodeID
@@ -64,7 +95,7 @@ func NewFakeDriver(t *testing.T) (*Driver, error) {
 	defer ctrl.Finish()
 
 	driver.cloud = azure.GetTestCloud(ctrl)
-	mounter, err := mounter.NewSafeMounter()
+	mounter, err := mounter.NewFakeSafeMounter()
 	if err != nil {
 		return nil, err
 	}
@@ -89,6 +120,14 @@ func NewFakeDriver(t *testing.T) (*Driver, error) {
 	})
 
 	return &driver, nil
+}
+
+func (d *fakeDriverV1) setNextCommandOutputScripts(scripts ...testingexec.FakeAction) {
+	d.mounter.Exec.(*mounter.FakeSafeMounter).SetNextCommandOutputScripts(scripts...)
+}
+
+func (d *fakeDriverV1) setIsBlockDevicePathError(path string, isDevice bool, result error) {
+	klog.Warning("setIsBlockDevicePathError ignored for driver v1")
 }
 
 func createVolumeCapabilities(accessMode csi.VolumeCapability_AccessMode_Mode) []*csi.VolumeCapability {

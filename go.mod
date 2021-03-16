@@ -1,11 +1,11 @@
 module sigs.k8s.io/azuredisk-csi-driver
 
-go 1.15
+go 1.16
 
 require (
-	github.com/Azure/azure-sdk-for-go v49.1.0+incompatible
-	github.com/Azure/go-autorest/autorest v0.11.1
-	github.com/Azure/go-autorest/autorest/adal v0.9.5
+	github.com/Azure/azure-sdk-for-go v51.2.0+incompatible
+	github.com/Azure/go-autorest/autorest v0.11.17
+	github.com/Azure/go-autorest/autorest/adal v0.9.10
 	github.com/Azure/go-autorest/autorest/date v0.3.0
 	github.com/Azure/go-autorest/autorest/to v0.2.0
 	github.com/container-storage-interface/spec v1.3.0
@@ -14,26 +14,28 @@ require (
 	github.com/kubernetes-csi/csi-lib-utils v0.7.0
 	github.com/kubernetes-csi/csi-proxy/client v0.2.2
 	github.com/kubernetes-csi/external-snapshotter/v2 v2.0.0-20200617021606-4800ca72d403
-	github.com/onsi/ginkgo v1.11.0
-	github.com/onsi/gomega v1.8.1
+	github.com/onsi/ginkgo v1.14.1
+	github.com/onsi/gomega v1.10.2
 	github.com/pborman/uuid v1.2.0
 	github.com/pelletier/go-toml v1.2.0
 	github.com/sirupsen/logrus v1.6.0
 	github.com/stretchr/testify v1.6.1
 	golang.org/x/net v0.0.0-20201110031124-69a78807bb2b
 	google.golang.org/grpc v1.28.0
-	k8s.io/api v0.20.0
-	k8s.io/apimachinery v0.20.0
-	k8s.io/client-go v0.20.0
+	k8s.io/api v0.20.2
+	k8s.io/apimachinery v0.20.2
+	k8s.io/client-go v0.20.2
 	k8s.io/cloud-provider v0.20.0
 	k8s.io/code-generator v0.20.0
-	k8s.io/component-base v0.20.0
+	k8s.io/component-base v0.20.2
+	k8s.io/klog v1.0.0
 	k8s.io/klog/v2 v2.4.0
 	k8s.io/kube-scheduler v0.20.0
 	k8s.io/kubernetes v1.21.0-alpha.0.0.20201210005053-f58c4d8cd725
 	k8s.io/mount-utils v0.0.0
-	k8s.io/utils v0.0.0-20201110183641-67b214c5f920
+	k8s.io/utils v0.0.0-20210111153108-fddb29f9d009
 	sigs.k8s.io/cloud-provider-azure v0.0.0
+	sigs.k8s.io/controller-runtime v0.8.2
 	sigs.k8s.io/yaml v1.2.0
 )
 
@@ -48,7 +50,7 @@ replace (
 	k8s.io/apiserver => k8s.io/apiserver v0.20.0
 	k8s.io/cli-runtime => k8s.io/cli-runtime v0.20.0
 	k8s.io/client-go => k8s.io/client-go v0.0.0-20201209050023-e24efdc77f15
-	k8s.io/cloud-provider => k8s.io/cloud-provider v0.0.0-20200711020125-52e5381d8dd1
+	k8s.io/cloud-provider => k8s.io/cloud-provider v0.0.0-20201021002512-82fca6d2b013
 	k8s.io/cluster-bootstrap => k8s.io/cluster-bootstrap v0.20.0
 	k8s.io/code-generator => k8s.io/code-generator v0.20.0
 	k8s.io/component-base => k8s.io/component-base v0.20.0
@@ -70,7 +72,7 @@ replace (
 	k8s.io/sample-cli-plugin => k8s.io/sample-cli-plugin v0.20.0
 	k8s.io/sample-controller => k8s.io/sample-controller v0.20.0
 	sigs.k8s.io/azuredisk-csi-driver => ./
-	sigs.k8s.io/cloud-provider-azure => sigs.k8s.io/cloud-provider-azure v0.6.1-0.20210108101253-ff7b2e61fb1b
+	sigs.k8s.io/cloud-provider-azure => sigs.k8s.io/cloud-provider-azure v0.7.1-0.20210309114433-837741f64934
 )
 
 replace github.com/niemeyer/pretty => github.com/niemeyer/pretty v0.0.0-20200227124842-a10e7caefd8e

@@ -19,10 +19,11 @@ package azuredisk
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
-	"k8s.io/client-go/kubernetes"
+	clientSet "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
@@ -31,26 +32,21 @@ import (
 )
 
 var (
+	// DefaultAzureCredentialFileEnv is the default azure credentials file env variable
 	DefaultAzureCredentialFileEnv = "AZURE_CREDENTIAL_FILE"
-	DefaultCredFilePathLinux      = "/etc/kubernetes/azure.json"
-	DefaultCredFilePathWindows    = "C:\\k\\azure.json"
+	// DefaultCredFilePathLinux is default creds file for linux machine
+	DefaultCredFilePathLinux = "/etc/kubernetes/azure.json"
+	// DefaultCredFilePathWindows is default creds file for windows machine
+	DefaultCredFilePathWindows = "C:\\k\\azure.json"
 )
 
 // IsAzureStackCloud decides whether the driver is running on Azure Stack Cloud.
-func IsAzureStackCloud(cloud string) bool {
-	return strings.EqualFold(cloud, "AZURESTACKCLOUD")
+func IsAzureStackCloud(cloud string, disableAzureStackCloud bool) bool {
+	return !disableAzureStackCloud && strings.EqualFold(cloud, azureStackCloud)
 }
 
 // GetCloudProvider get Azure Cloud Provider
-func GetCloudProvider(kubeconfig string) (*azure.Cloud, error) {
-	kubeClient, err := getKubeClient(kubeconfig)
-	if err != nil {
-		klog.Warningf("get kubeconfig(%s) failed with error: %v", kubeconfig, err)
-		if !os.IsNotExist(err) && err != rest.ErrNotInCluster {
-			return nil, fmt.Errorf("failed to get KubeClient: %v", err)
-		}
-	}
-
+func GetCloudProvider(kubeClient clientSet.Interface) (*azure.Cloud, error) {
 	az := &azure.Cloud{}
 	if kubeClient != nil {
 		klog.V(2).Infof("reading cloud config from secret")
@@ -58,7 +54,7 @@ func GetCloudProvider(kubeconfig string) (*azure.Cloud, error) {
 		az.InitializeCloudFromSecret()
 	}
 
-	if az.TenantID == "" || az.SubscriptionID == "" {
+	if az.TenantID == "" || az.SubscriptionID == "" || az.ResourceGroup == "" {
 		klog.V(2).Infof("could not read cloud config from secret")
 		credFile, ok := os.LookupEnv(DefaultAzureCredentialFileEnv)
 		if ok && strings.TrimSpace(credFile) != "" {
@@ -81,27 +77,39 @@ func GetCloudProvider(kubeconfig string) (*azure.Cloud, error) {
 		defer f.Close()
 
 		klog.V(2).Infof("read cloud config from file: %s successfully", credFile)
-		return azure.NewCloudWithoutFeatureGates(f)
+		if az, err = azure.NewCloudWithoutFeatureGates(f); err != nil {
+			return az, err
+		}
 	}
 
-	klog.V(2).Infof("read cloud config from secret successfully")
+	// reassign kubeClient
+	if kubeClient != nil && az.KubeClient == nil {
+		az.KubeClient = kubeClient
+	}
 	return az, nil
 }
 
-func getKubeClient(kubeconfig string) (*kubernetes.Clientset, error) {
-	var (
-		config *rest.Config
-		err    error
-	)
-	if kubeconfig != "" {
-		if config, err = clientcmd.BuildConfigFromFlags("", kubeconfig); err != nil {
-			return nil, err
-		}
-	} else {
-		if config, err = rest.InClusterConfig(); err != nil {
-			return nil, err
+// GetKubeConfig gets config object from config file
+func GetKubeConfig(kubeconfig string) (config *rest.Config, err error) {
+
+	if kubeconfig == "" {
+		// if kubeconfig path is not passed
+		// read the incluster config
+		config, err = rest.InClusterConfig()
+
+		// if we couldn't get the in-cluster config
+		// get kubeconfig path from environment variable
+		if err != nil {
+			kubeconfig = os.Getenv("KUBECONFIG")
+			if kubeconfig == "" {
+				kubeconfig = filepath.Join(os.Getenv("HOME"), ".kube", "config")
+			}
+		} else {
+			return config, err
 		}
 	}
 
-	return kubernetes.NewForConfig(config)
+	config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+
+	return config, err
 }

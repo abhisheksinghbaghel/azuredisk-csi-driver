@@ -47,7 +47,7 @@ spec:
           resources:
             limits:
               cpu: 100m
-              memory: 100Mi
+              memory: 300Mi
             requests:
               cpu: 10m
               memory: 20Mi
@@ -67,7 +67,7 @@ spec:
           resources:
             limits:
               cpu: 100m
-              memory: 100Mi
+              memory: 400Mi
             requests:
               cpu: 10m
               memory: 20Mi
@@ -108,7 +108,7 @@ spec:
           resources:
             limits:
               cpu: 100m
-              memory: 100Mi
+              memory: 200Mi
             requests:
               cpu: 10m
               memory: 20Mi
@@ -132,7 +132,7 @@ spec:
         - name: azuredisk
           image: "{{ .Values.image.azuredisk.repository }}:{{ .Values.image.azuredisk.tag }}"
           args:
-            - "--v=5"
+            - "--v={{ .Values.controller.logLevel }}"
             - "--endpoint=$(CSI_ENDPOINT)"
             - "--metrics-address=0.0.0.0:{{ .Values.controller.metricsPort }}"
           ports:
@@ -180,7 +180,7 @@ spec:
           resources:
             limits:
               cpu: 200m
-              memory: 200Mi
+              memory: 300Mi
             requests:
               cpu: 10m
               memory: 20Mi

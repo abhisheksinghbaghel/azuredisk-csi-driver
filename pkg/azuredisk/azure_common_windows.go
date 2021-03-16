@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 	"k8s.io/mount-utils"
 
@@ -29,7 +30,7 @@ import (
 )
 
 func formatAndMount(source, target, fstype string, options []string, m *mount.SafeFormatAndMount) error {
-	proxy, ok := m.Interface.(*mounter.CSIProxyMounter)
+	proxy, ok := m.Interface.(mounter.CSIProxyMounter)
 	if !ok {
 		return fmt.Errorf("could not cast to csi proxy class")
 	}
@@ -37,7 +38,7 @@ func formatAndMount(source, target, fstype string, options []string, m *mount.Sa
 }
 
 func scsiHostRescan(io ioHandler, m *mount.SafeFormatAndMount) {
-	proxy, ok := m.Interface.(*mounter.CSIProxyMounter)
+	proxy, ok := m.Interface.(mounter.CSIProxyMounter)
 	if !ok {
 		klog.Errorf("could not cast to csi proxy class")
 		return
@@ -50,7 +51,7 @@ func scsiHostRescan(io ioHandler, m *mount.SafeFormatAndMount) {
 
 // search Windows disk number by LUN
 func findDiskByLun(lun int, iohandler ioHandler, m *mount.SafeFormatAndMount) (string, error) {
-	proxy, ok := m.Interface.(*mounter.CSIProxyMounter)
+	proxy, ok := m.Interface.(mounter.CSIProxyMounter)
 	if !ok {
 		return "", fmt.Errorf("could not cast to csi proxy class")
 	}
@@ -66,7 +67,7 @@ func findDiskByLun(lun int, iohandler ioHandler, m *mount.SafeFormatAndMount) (s
 // from global stage path to the publish path. But kubelet creates the directory in advance.
 // We work around this issue by deleting the publish path then recreating the link.
 func preparePublishPath(path string, m *mount.SafeFormatAndMount) error {
-	proxy, ok := m.Interface.(*mounter.CSIProxyMounter)
+	proxy, ok := m.Interface.(mounter.CSIProxyMounter)
 	if !ok {
 		return fmt.Errorf("could not cast to csi proxy class")
 	}
@@ -89,4 +90,54 @@ func CleanupMountPoint(path string, m *mount.SafeFormatAndMount, extensiveCheck 
 	// CSI proxy alpha does not support fixing the corrupted directory. So we will
 	// just do the unmount for now.
 	return m.Unmount(path)
+}
+
+func getDevicePathWithMountPath(mountPath string, m *mount.SafeFormatAndMount) (string, error) {
+	proxy, ok := m.Interface.(mounter.CSIProxyMounter)
+	if !ok {
+		return "", fmt.Errorf("could not cast to csi proxy class")
+	}
+
+	devicePath, err := proxy.GetDeviceNameFromMount(mountPath, "")
+	if err != nil {
+		if sts, ok := status.FromError(err); ok {
+			return "", fmt.Errorf(sts.Message())
+		}
+		return "", err
+	}
+
+	return devicePath, nil
+}
+
+func getBlockSizeBytes(devicePath string, m *mount.SafeFormatAndMount) (int64, error) {
+	proxy, ok := m.Interface.(mounter.CSIProxyMounter)
+	if !ok {
+		return -1, fmt.Errorf("could not cast to csi proxy class")
+	}
+
+	sizeInBytes, err := proxy.GetVolumeSizeInBytes(devicePath)
+	if err != nil {
+		if sts, ok := status.FromError(err); ok {
+			return -1, fmt.Errorf(sts.Message())
+		}
+		return -1, err
+	}
+
+	return sizeInBytes, nil
+}
+
+func resizeVolume(devicePath, volumePath string, m *mount.SafeFormatAndMount) error {
+	proxy, ok := m.Interface.(mounter.CSIProxyMounter)
+	if !ok {
+		return fmt.Errorf("could not cast to csi proxy class")
+	}
+
+	if err := proxy.ResizeVolume(devicePath); err != nil {
+		if sts, ok := status.FromError(err); ok {
+			return fmt.Errorf(sts.Message())
+		}
+		return err
+	}
+
+	return nil
 }

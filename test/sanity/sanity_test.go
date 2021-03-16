@@ -18,6 +18,7 @@ package sanity
 
 import (
 	"context"
+	"flag"
 	"log"
 	"os"
 	"os/exec"
@@ -32,9 +33,15 @@ import (
 
 const (
 	nodeid = "sanity-test-node"
+	vmType = "standard"
 )
 
+var useDriverV2 = flag.Bool("temp-use-driver-v2", false, "A temporary flag to enable early test and development of Azure Disk CSI Driver V2. This will be removed in the future.")
+
 func TestSanity(t *testing.T) {
+	// Set necessary env vars for creating azure credential file
+	os.Setenv("AZURE_VM_TYPE", vmType)
+
 	creds, err := credentials.CreateAzureCredentialFile()
 	defer func() {
 		err := credentials.DeleteAzureCredentialFile()
@@ -81,7 +88,12 @@ func TestSanity(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, strings.HasSuffix(projectRoot, "azuredisk-csi-driver"))
 
-	cmd := exec.Command("./test/sanity/run-tests-all-clouds.sh")
+	args := make([]string, 0)
+	if *useDriverV2 {
+		args = append(args, "v2")
+	}
+
+	cmd := exec.Command("./test/sanity/run-tests-all-clouds.sh", args...)
 	cmd.Dir = projectRoot
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

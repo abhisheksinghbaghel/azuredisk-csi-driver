@@ -98,11 +98,21 @@ type AzVolumeAttachmentList struct {
 // +kubebuilder:printcolumn:name="LastHeartbeatTime",type=integer,JSONPath=`.status.lastHeartbeatTime`,description="Represents the time stamp at which azure persistent volume driver sent a heatbeat."
 // +kubebuilder:printcolumn:name="StatusMessage",type=string,JSONPath=`.status.statusMessage`,description="A brief node status message."
 type AzDriverNode struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
+	metav1.TypeMeta `json:",inline"`
+	// Standard object's metadata.
+	// More info: https://git.k8s.io/community/contributors/devel/api-conventions.md#metadata
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
 
-	Spec   AzDriverNodeSpec   `json:"spec"`
-	Status AzDriverNodeStatus `json:"status"`
+	// spec defines the desired state of a AzDriverNode.
+	// Required.
+	Spec AzDriverNodeSpec `json:"spec" protobuf:"bytes,2,name=spec"`
+
+	// status represents the current state of AzDriverNode.
+	// If this is nil or empty, clients should prefer other nodes
+	// for persistent volume allocations or pod places for pods which use azure persistent volumes.
+	// +optional
+	Status *AzDriverNodeStatus `json:"status,omitempty" protobuf:"bytes,3,opt,name=status"`
 }
 
 // AzDriverNodeSpec is the spec for a AzDriverNode resource.

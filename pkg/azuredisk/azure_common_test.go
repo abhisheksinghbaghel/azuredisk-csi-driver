@@ -17,17 +17,22 @@ limitations under the License.
 package azuredisk
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-30/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
 	"github.com/stretchr/testify/assert"
+	"sigs.k8s.io/azuredisk-csi-driver/pkg/mounter"
+	"sigs.k8s.io/azuredisk-csi-driver/test/utils/testutil"
 
 	v1 "k8s.io/api/core/v1"
+	testingexec "k8s.io/utils/exec/testing"
 )
 
 type fakeFileInfo struct {
@@ -139,63 +144,79 @@ func TestIoHandler(t *testing.T) {
 
 func TestNormalizeStorageAccountType(t *testing.T) {
 	tests := []struct {
-		cloud               string
-		storageAccountType  string
-		expectedAccountType compute.DiskStorageAccountTypes
-		expectError         bool
+		cloud                  string
+		storageAccountType     string
+		disableAzureStackCloud bool
+		expectedAccountType    compute.DiskStorageAccountTypes
+		expectError            bool
 	}{
 		{
-			cloud:               "AZUREPUBLICCLOUD",
-			storageAccountType:  "",
-			expectedAccountType: compute.StandardSSDLRS,
-			expectError:         false,
+			cloud:                  azurePublicCloud,
+			storageAccountType:     "",
+			disableAzureStackCloud: false,
+			expectedAccountType:    compute.StandardSSDLRS,
+			expectError:            false,
 		},
 		{
-			cloud:               "AZURESTACKCLOUD",
-			storageAccountType:  "",
-			expectedAccountType: compute.StandardLRS,
-			expectError:         false,
+			cloud:                  azureStackCloud,
+			storageAccountType:     "",
+			disableAzureStackCloud: false,
+			expectedAccountType:    compute.StandardLRS,
+			expectError:            false,
 		},
 		{
-			cloud:               "AZUREPUBLICCLOUD",
-			storageAccountType:  "NOT_EXISTING",
-			expectedAccountType: "",
-			expectError:         true,
+			cloud:                  azurePublicCloud,
+			storageAccountType:     "NOT_EXISTING",
+			disableAzureStackCloud: false,
+			expectedAccountType:    "",
+			expectError:            true,
 		},
 		{
-			cloud:               "AZUREPUBLICCLOUD",
-			storageAccountType:  "Standard_LRS",
-			expectedAccountType: compute.StandardLRS,
-			expectError:         false,
+			cloud:                  azurePublicCloud,
+			storageAccountType:     "Standard_LRS",
+			disableAzureStackCloud: false,
+			expectedAccountType:    compute.StandardLRS,
+			expectError:            false,
 		},
 		{
-			cloud:               "AZUREPUBLICCLOUD",
-			storageAccountType:  "Premium_LRS",
-			expectedAccountType: compute.PremiumLRS,
-			expectError:         false,
+			cloud:                  azurePublicCloud,
+			storageAccountType:     "Premium_LRS",
+			disableAzureStackCloud: false,
+			expectedAccountType:    compute.PremiumLRS,
+			expectError:            false,
 		},
 		{
-			cloud:               "AZUREPUBLICCLOUD",
-			storageAccountType:  "StandardSSD_LRS",
-			expectedAccountType: compute.StandardSSDLRS,
-			expectError:         false,
+			cloud:                  azurePublicCloud,
+			storageAccountType:     "StandardSSD_LRS",
+			disableAzureStackCloud: false,
+			expectedAccountType:    compute.StandardSSDLRS,
+			expectError:            false,
 		},
 		{
-			cloud:               "AZUREPUBLICCLOUD",
-			storageAccountType:  "UltraSSD_LRS",
-			expectedAccountType: compute.UltraSSDLRS,
-			expectError:         false,
+			cloud:                  azurePublicCloud,
+			storageAccountType:     "UltraSSD_LRS",
+			disableAzureStackCloud: false,
+			expectedAccountType:    compute.UltraSSDLRS,
+			expectError:            false,
 		},
 		{
-			cloud:               "AZURESTACKCLOUD",
-			storageAccountType:  "UltraSSD_LRS",
-			expectedAccountType: "",
-			expectError:         true,
+			cloud:                  azureStackCloud,
+			storageAccountType:     "UltraSSD_LRS",
+			disableAzureStackCloud: false,
+			expectedAccountType:    "",
+			expectError:            true,
+		},
+		{
+			cloud:                  azureStackCloud,
+			storageAccountType:     "UltraSSD_LRS",
+			disableAzureStackCloud: true,
+			expectedAccountType:    compute.UltraSSDLRS,
+			expectError:            false,
 		},
 	}
 
 	for _, test := range tests {
-		result, err := normalizeStorageAccountType(test.storageAccountType, test.cloud)
+		result, err := normalizeStorageAccountType(test.storageAccountType, test.cloud, test.disableAzureStackCloud)
 		assert.Equal(t, result, test.expectedAccountType)
 		assert.Equal(t, err != nil, test.expectError, fmt.Sprintf("error msg: %v", err))
 	}
@@ -236,7 +257,7 @@ func TestNormalizeCachingMode(t *testing.T) {
 func TestGetDiskLUN(t *testing.T) {
 	tests := []struct {
 		deviceInfo  string
-		expectedLUN int32
+		expectedLUN int
 		expectError bool
 	}{
 		{
@@ -306,5 +327,116 @@ func TestStrFirstLetterToUpper(t *testing.T) {
 	str = "Test"
 	if strFirstLetterToUpper(str) != "Test" {
 		t.Errorf("result wrong")
+	}
+}
+
+func TestGetBlockSizeBytes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping test on Windows")
+	}
+	fakeMounter, err := mounter.NewFakeSafeMounter()
+	assert.NoError(t, err)
+	testTarget, err := testutil.GetWorkDirPath("test")
+	assert.NoError(t, err)
+
+	notFoundErr := "exit status 1"
+	// exception in darwin
+	if runtime.GOOS == "darwin" {
+		notFoundErr = "executable file not found in $PATH"
+	} else if runtime.GOOS == "windows" {
+		notFoundErr = "executable file not found in %PATH%"
+	}
+
+	notFoundErrAction := func() ([]byte, []byte, error) {
+		return []byte{}, []byte{}, errors.New(notFoundErr)
+	}
+
+	tests := []struct {
+		desc         string
+		req          string
+		outputScript testingexec.FakeAction
+		expectedErr  testutil.TestError
+	}{
+		{
+			desc:         "no exist path",
+			req:          "testpath",
+			outputScript: notFoundErrAction,
+			expectedErr: testutil.TestError{
+				DefaultError: fmt.Errorf("error when getting size of block volume at path testpath: output: , err: %s", notFoundErr),
+				WindowsError: fmt.Errorf("error when getting size of block volume at path testpath: output: , err: %s", notFoundErr),
+			},
+		},
+		{
+			desc:         "invalid path",
+			req:          testTarget,
+			outputScript: notFoundErrAction,
+			expectedErr: testutil.TestError{
+				DefaultError: fmt.Errorf("error when getting size of block volume at path %s: "+
+					"output: , err: %s", testTarget, notFoundErr),
+				WindowsError: fmt.Errorf("error when getting size of block volume at path %s: "+
+					"output: , err: %s", testTarget, notFoundErr),
+			},
+		},
+	}
+	for _, test := range tests {
+		fakeMounter.Exec.(*mounter.FakeSafeMounter).SetNextCommandOutputScripts(test.outputScript)
+
+		_, err := getBlockSizeBytes(test.req, fakeMounter)
+		if !testutil.AssertError(&test.expectedErr, err) {
+			t.Errorf("desc: %s\n actualErr: (%v), expectedErr: (%v)", test.desc, err, test.expectedErr.Error())
+		}
+	}
+	//Setup
+	_ = makeDir(testTarget)
+
+	err = os.RemoveAll(testTarget)
+	assert.NoError(t, err)
+}
+
+func TestGetDevicePathWithMountPath(t *testing.T) {
+	fakeMounter, err := mounter.NewFakeSafeMounter()
+	assert.NoError(t, err)
+	err = errors.New("exit status 1")
+
+	tests := []struct {
+		desc          string
+		req           string
+		skipOnDarwin  bool
+		skipOnWindows bool
+		expectedErr   error
+		outputScript  testingexec.FakeAction
+	}{
+		{
+			desc:        "Invalid device path",
+			req:         "unit-test",
+			expectedErr: fmt.Errorf("could not determine device path(unit-test), error: %v", err),
+			// Skip negative tests on Windows because error messages from csi-proxy are not easily predictable.
+			skipOnWindows: true,
+			outputScript: func() ([]byte, []byte, error) {
+				return []byte{}, []byte{}, err
+			},
+		},
+		{
+			desc:          "[Success] Valid device path",
+			req:           "/sys",
+			skipOnDarwin:  true,
+			skipOnWindows: true,
+			expectedErr:   nil,
+			outputScript: func() ([]byte, []byte, error) {
+				return []byte("/sys"), []byte{}, nil
+			},
+		},
+	}
+
+	for _, test := range tests {
+		if !(test.skipOnDarwin && runtime.GOOS == "darwin") && !(test.skipOnWindows && runtime.GOOS == "windows") {
+			if test.outputScript != nil {
+				fakeMounter.Exec.(*mounter.FakeSafeMounter).SetNextCommandOutputScripts(test.outputScript)
+			}
+			_, err := getDevicePathWithMountPath(test.req, fakeMounter)
+			if !reflect.DeepEqual(err, test.expectedErr) {
+				t.Errorf("desc: %s\n actualErr: (%v), expectedErr: (%v)", test.desc, err, test.expectedErr)
+			}
+		}
 	}
 }

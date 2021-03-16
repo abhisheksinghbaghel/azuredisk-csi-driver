@@ -24,7 +24,7 @@ import (
 	"strconv"
 	libstrings "strings"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-06-30/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -46,9 +46,9 @@ var (
 	lunPathRE = regexp.MustCompile(`/dev(?:.*)/disk/azure/scsi(?:.*)/lun(.+)`)
 )
 
-func normalizeStorageAccountType(storageAccountType, cloud string) (compute.DiskStorageAccountTypes, error) {
+func normalizeStorageAccountType(storageAccountType, cloud string, disableAzureStackCloud bool) (compute.DiskStorageAccountTypes, error) {
 	if storageAccountType == "" {
-		if IsAzureStackCloud(cloud) {
+		if IsAzureStackCloud(cloud, disableAzureStackCloud) {
 			return azureStackCloudDefaultStorageAccountType, nil
 		}
 		return azurePublicCloudDefaultStorageAccountType, nil
@@ -56,7 +56,7 @@ func normalizeStorageAccountType(storageAccountType, cloud string) (compute.Disk
 
 	sku := compute.DiskStorageAccountTypes(storageAccountType)
 	supportedSkuNames := compute.PossibleDiskStorageAccountTypesValues()
-	if IsAzureStackCloud(cloud) {
+	if IsAzureStackCloud(cloud, disableAzureStackCloud) {
 		supportedSkuNames = []compute.DiskStorageAccountTypes{compute.StandardLRS, compute.PremiumLRS}
 	}
 	for _, s := range supportedSkuNames {
@@ -115,7 +115,7 @@ func strFirstLetterToUpper(str string) string {
 }
 
 // getDiskLUN : deviceInfo could be a LUN number or a device path, e.g. /dev/disk/azure/scsi1/lun2
-func getDiskLUN(deviceInfo string) (int32, error) {
+func getDiskLUN(deviceInfo string) (int, error) {
 	var diskLUN string
 	if len(deviceInfo) <= 2 {
 		diskLUN = deviceInfo
@@ -133,5 +133,5 @@ func getDiskLUN(deviceInfo string) (int32, error) {
 	if err != nil {
 		return -1, err
 	}
-	return int32(lun), nil
+	return lun, nil
 }
