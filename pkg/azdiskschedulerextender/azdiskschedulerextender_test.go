@@ -817,7 +817,7 @@ func getDriverNode(driverNodeName, ns, nodeName string, ready bool) v1alpha1Clie
 		Spec: v1alpha1Client.AzDriverNodeSpec{
 			NodeName: nodeName,
 		},
-		Status: v1alpha1Client.AzDriverNodeStatus{
+		Status: &v1alpha1Client.AzDriverNodeStatus{
 			ReadyForVolumeAllocation: &ready,
 			LastHeartbeatTime:        &heartbeat,
 		},
