@@ -696,8 +696,8 @@ func TestFilterAndPrioritizeInRandomizedLargeCluster(t *testing.T) {
 					seed := make([]byte, 8)
 					_, err := crypto.Read(seed)
 					if err != nil {
-						klog.Errorf("Generating rand seed for podCount failed: %v ", err)
-						t.Fatal(err)
+						errorChan <- fmt.Errorf("Generating rand seed for podCount failed: %v ", err)
+						return
 					}
 					rng := rand.New(rand.NewSource(int64(binary.LittleEndian.Uint64(seed[:]))))
 
