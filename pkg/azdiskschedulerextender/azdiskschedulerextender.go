@@ -121,8 +121,8 @@ func prioritize(context context.Context, schedulerExtenderArgs schedulerapi.Exte
 		priorityList = setNodeSocresToZero(availableNodes)
 	} else {
 		volumesPodNeeds := make(map[string]struct{})
-		nodeNameToVolumeMap:= make(map[string][]string)
-		nodeNameToHeartbeatMap :=  make(map[string]int64)
+		nodeNameToVolumeMap := make(map[string][]string)
+		nodeNameToHeartbeatMap := make(map[string]int64)
 		nodesChan, volumesChan := make(chan azDriverNodesMeta), make(chan azVolumeAttachmentsMeta)
 
 		go getAzDriverNodes(context, nodesChan)
@@ -237,7 +237,7 @@ func getNodeScore(volumeAttachments int, heartbeat int64) int64 {
 		return 0
 	}
 
-	score := int64(volumeAttachments*100) + int64(now.UnixNano() - heartbeat*10000) //TODO fix logic when all variables are finalized
+	score := int64(volumeAttachments*100) + int64(now.UnixNano()-heartbeat*10000) //TODO fix logic when all variables are finalized
 	return score
 }
 

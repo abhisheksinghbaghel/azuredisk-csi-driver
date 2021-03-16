@@ -631,9 +631,9 @@ func TestFilterAndPrioritizeInRandomizedLargeCluster(t *testing.T) {
 	var nodeNames []string
 
 	//TODO increase numberOfPodsToSchedule when changing the implemention to reuse goroutines
-	stressTestSetupParams := map[string][3]int {
-		"low": [3]int{500, 5000, 1000},
-		"avg": [3]int{1000, 10000, 1000},
+	stressTestSetupParams := map[string][3]int{
+		"low":  [3]int{500, 5000, 1000},
+		"avg":  [3]int{1000, 10000, 1000},
 		"high": [3]int{5000, 30000, 1000},
 	}
 
@@ -783,7 +783,7 @@ func gotExpectedPrioritizeList(got, want schedulerapi.HostPriorityList) bool {
 		if got[i].Host != want[i].Host {
 			return false
 		}
-		// if got[i].Score > want[i].Score { //TODO add logic to validate score 
+		// if got[i].Score > want[i].Score { //TODO add logic to validate score
 		// 	return false
 		// }
 	}
@@ -815,11 +815,11 @@ func getDriverNode(driverNodeName, ns, nodeName string, ready bool) v1alpha1Clie
 			Namespace: ns,
 		},
 		Spec: v1alpha1Client.AzDriverNodeSpec{
-			NodeName:  nodeName,		
+			NodeName: nodeName,
 		},
 		Status: v1alpha1Client.AzDriverNodeStatus{
 			ReadyForVolumeAllocation: &ready,
-			LastHeartbeatTime: &heartbeat,
+			LastHeartbeatTime:        &heartbeat,
 		},
 	}
 
