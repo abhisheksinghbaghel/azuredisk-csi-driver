@@ -638,9 +638,9 @@ func TestFilterAndPrioritizeInRandomizedLargeCluster(t *testing.T) {
 		numberOfVolumes int
 		numberOfPods    int
 	}{
-		"low":  {500, 5000, 1000},
-		"avg":  {1000, 10000, 1000},
-		"high": {5000, 30000, 1000},
+		"low":  {500, 5000, 100},
+		"avg":  {1000, 10000, 100},
+		"high": {5000, 30000, 100},
 	}
 
 	//save original clients
@@ -652,7 +652,7 @@ func TestFilterAndPrioritizeInRandomizedLargeCluster(t *testing.T) {
 	}()
 
 	for _, setupParams := range stressTestSetupParams {
-		t.Run("sd", func(t *testing.T) {
+		t.Run("Stress test", func(t *testing.T) {
 			var tokens = make(chan struct{}, 20)
 			var wg sync.WaitGroup
 			var clusterNodes []v1alpha1Client.AzDriverNode

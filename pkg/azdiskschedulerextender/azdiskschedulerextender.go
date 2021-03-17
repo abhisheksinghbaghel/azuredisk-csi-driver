@@ -69,6 +69,8 @@ func filter(context context.Context, schedulerExtenderArgs schedulerapi.Extender
 		failedNodes       map[string]string
 	)
 
+	defer duration(track("Filter"))
+
 	requestedVolumes := schedulerExtenderArgs.Pod.Spec.Volumes
 
 	//TODO add RWM volume case here
@@ -112,6 +114,7 @@ func filter(context context.Context, schedulerExtenderArgs schedulerapi.Extender
 
 func prioritize(context context.Context, schedulerExtenderArgs schedulerapi.ExtenderArgs) (priorityList schedulerapi.HostPriorityList, err error) {
 
+	defer duration(track("Prioritize"))
 	availableNodes := schedulerExtenderArgs.Nodes.Items
 	requestedVolumes := schedulerExtenderArgs.Pod.Spec.Volumes
 
@@ -272,4 +275,13 @@ func setNodeSocresToZero(nodes []v1.Node) (priorityList schedulerapi.HostPriorit
 		priorityList = append(priorityList, hostPriority)
 	}
 	return
+}
+
+func track(functionName string) (string, time.Time) {
+	return functionName, time.Now()
+}
+
+func duration(functionName string, start time.Time) {
+	duration := time.Since(start)
+	klog.V(2).Infof("Call to %v took: %v \n", functionName, duration.Nanoseconds)
 }
